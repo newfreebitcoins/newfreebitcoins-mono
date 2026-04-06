@@ -45,7 +45,7 @@ const WIDTH: usize = 66;
 struct Cli {
     #[arg(long)]
     password: Option<String>,
-    #[arg(long, default_value = "http://localhost:3001")]
+    #[arg(long, default_value = "https://newfreebitcoins.com")]
     backend: String,
     #[arg(long)]
     data_dir: Option<PathBuf>,

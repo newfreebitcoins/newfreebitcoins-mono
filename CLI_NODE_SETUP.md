@@ -89,7 +89,7 @@ npm run dev
 That starts:
 
 - frontend on `http://localhost:3000`
-- backend on `http://localhost:3001`
+- backend on `http://localhost:4669`
 
 ## Step 5: Build Or Run The CLI
 
@@ -102,7 +102,7 @@ cargo build --manifest-path apps/donor-cli/Cargo.toml
 Or run it directly:
 
 ```powershell
-cargo run --manifest-path apps/donor-cli/Cargo.toml -- --password "testpass" balance
+cargo run --manifest-path apps/donor-cli/Cargo.toml -- --backend "http://localhost:4669" --password "testpass" balance
 ```
 
 ## First Run Behavior
@@ -125,7 +125,7 @@ After that, every command requires:
 ### Balance
 
 ```powershell
-cargo run --manifest-path apps/donor-cli/Cargo.toml -- --password "testpass" balance
+cargo run --manifest-path apps/donor-cli/Cargo.toml -- --backend "http://localhost:4669" --password "testpass" balance
 ```
 
 Shows:
@@ -137,7 +137,7 @@ Shows:
 ### Activity
 
 ```powershell
-cargo run --manifest-path apps/donor-cli/Cargo.toml -- --password "testpass" activity --limit 10
+cargo run --manifest-path apps/donor-cli/Cargo.toml -- --backend "http://localhost:4669" --password "testpass" activity --limit 10
 ```
 
 Shows:
@@ -149,7 +149,7 @@ Shows:
 ### Send
 
 ```powershell
-cargo run --manifest-path apps/donor-cli/Cargo.toml -- --password "testpass" send --address bcrt1... --amount-sats 2500
+cargo run --manifest-path apps/donor-cli/Cargo.toml -- --backend "http://localhost:4669" --password "testpass" send --address bcrt1... --amount-sats 2500
 ```
 
 This:
@@ -162,7 +162,7 @@ This:
 ### Start
 
 ```powershell
-cargo run --manifest-path apps/donor-cli/Cargo.toml -- --password "testpass" start --max-requests 5
+cargo run --manifest-path apps/donor-cli/Cargo.toml -- --backend "http://localhost:4669" --password "testpass" start --max-requests 5
 ```
 
 This starts the donor loop:

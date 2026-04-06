@@ -239,7 +239,8 @@ function normalizeConfig(parsed: unknown): AppConfig {
       clientId: legacy.x_client_id,
       clientSecret: legacy.x_client_secret,
       callbackUrl:
-        legacy.x_callback_url ?? "http://localhost:3001/api/x_oauth2_callback",
+        legacy.x_callback_url ??
+          "https://newfreebitcoins.com/api/x_oauth2_callback",
       scopes: legacy.x_scopes ?? ["users.read", "tweet.read"]
     }
   });

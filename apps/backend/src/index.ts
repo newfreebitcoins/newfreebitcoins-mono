@@ -561,7 +561,7 @@ async function reserveNextFaucetRequests(
 }
 
 function getFrontendBaseUrl(): string {
-  return config.host ?? "http://localhost:3000";
+  return config.host ?? "https://newfreebitcoins.github.io";
 }
 
 function getRequestPageUrl(searchParams?: URLSearchParams): string {
@@ -604,6 +604,7 @@ function setCorsHeaders(response: express.Response) {
 function isAllowedOrigin(origin: string): boolean {
   const allowedOrigins = new Set<string>([
     config.host ?? "",
+    "https://newfreebitcoins.github.io",
     "http://localhost:3000",
     "http://127.0.0.1:3000"
   ]);

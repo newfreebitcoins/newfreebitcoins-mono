@@ -1,5 +1,5 @@
 export const CLIENT_CONFIG = {
-  backendEndpoint: "http://localhost:3001",
+  backendEndpoint: "https://newfreebitcoins.com",
   electrum: {
     mainnet: {
       host: "electrum.blockstream.info",
