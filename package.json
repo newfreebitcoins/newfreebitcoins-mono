@@ -7,6 +7,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev --parallel --ui=tui",
+    "dev:backend": "npm run dev --workspace @new-free-bitcoins/backend",
     "dev:backend:cache": "npm run dev:cache --workspace @new-free-bitcoins/backend",
     "build": "turbo run build"
   },
