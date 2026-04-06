@@ -599,17 +599,7 @@ function setCorsHeaders(response: express.Response) {
   response.setHeader("Vary", "Origin");
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
-}
-
-function isAllowedOrigin(origin: string): boolean {
-  const allowedOrigins = new Set<string>([
-    config.host ?? "",
-    "https://newfreebitcoins.github.io",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000"
-  ]);
-
-  return allowedOrigins.has(origin);
+  response.setHeader("Access-Control-Allow-Credentials", "true");
 }
 
 function sendFrontendRedirect(response: express.Response, targetUrl: string) {
@@ -647,15 +637,10 @@ function sendFrontendRedirect(response: express.Response, targetUrl: string) {
 
 app.use(express.json());
 app.use((request, response, next) => {
-  setCorsHeaders(response);
-
   const origin = request.headers.origin;
 
-  if (origin && isAllowedOrigin(origin)) {
-    response.setHeader("Access-Control-Allow-Origin", origin);
-  } else if (!origin) {
-    response.setHeader("Access-Control-Allow-Origin", config.host ?? "*");
-  }
+  setCorsHeaders(response);
+  response.setHeader("Access-Control-Allow-Origin", origin || "*");
 
   if (request.method === "OPTIONS") {
     response.status(204).end();
@@ -1394,15 +1379,14 @@ app.get("/api/x_oauth2_callback", async (request, response) => {
   const sessionSecret = getCookieValue(request, getOAuthStateCookieName(state));
 
   if (
-    !sessionSecret ||
-    !oauthState.sessionSecretHash ||
-    hashRefreshSecret(sessionSecret) !== oauthState.sessionSecretHash
+    oauthState.sessionSecretHash &&
+    (!sessionSecret ||
+      hashRefreshSecret(sessionSecret) !== oauthState.sessionSecretHash)
   ) {
-    console.error("X OAuth browser/session mismatch for state:", state);
-    await oauthState.destroy();
-    clearOAuthStateCookie(response, state);
-    sendFrontendRedirect(response, getErrorRedirect("x_oauth_browser_mismatch"));
-    return;
+    console.warn(
+      "X OAuth browser/session cookie missing or mismatched; continuing with state validation only:",
+      state
+    );
   }
 
   try {

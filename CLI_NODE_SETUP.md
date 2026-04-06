@@ -88,7 +88,7 @@ npm run dev
 
 That starts:
 
-- frontend on `http://localhost:3000`
+- frontend on `http://localhost:4668`
 - backend on `http://localhost:4669`
 
 ## Step 5: Build Or Run The CLI

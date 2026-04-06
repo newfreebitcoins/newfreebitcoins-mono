@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "predev": "node scripts/build-donate-bundle.mjs",
-    "dev": "serve client -l 3000",
+    "dev": "serve client -l 4668",
     "build": "node -e \"console.log('Static frontend build not required')\""
   },
   "devDependencies": {

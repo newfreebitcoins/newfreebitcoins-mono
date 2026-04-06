@@ -13,7 +13,8 @@ async function parseJson(response) {
 export async function getJson(url) {
   try {
     const response = await fetch(url, {
-      cache: "no-store"
+      cache: "no-store",
+      credentials: "include"
     });
     const payload = await parseJson(response);
 
@@ -42,6 +43,7 @@ export async function postJson(url, payload) {
     const response = await fetch(url, {
       method: "POST",
       cache: "no-store",
+      credentials: "include",
       headers: {
         "Content-Type": "application/json"
       },
