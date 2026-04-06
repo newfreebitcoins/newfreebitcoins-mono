@@ -1,0 +1,16 @@
+{
+  "name": "new-free-bitcoins",
+  "private": true,
+  "packageManager": "npm@10.9.2",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "turbo run dev --parallel --ui=tui",
+    "dev:backend:cache": "npm run dev:cache --workspace @new-free-bitcoins/backend",
+    "build": "turbo run build"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0"
+  }
+}

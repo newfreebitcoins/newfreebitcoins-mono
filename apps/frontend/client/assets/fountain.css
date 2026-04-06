@@ -1,0 +1,153 @@
+/*If you're having a hard time with this template just contact me (www.yomena.de). I'll modify it or even create a unique design for you. This template is distributed under the Creative Commons Attribution 3.0 license. Modify it as you like, but please leave credit intact. Have fun!!! */
+
+body {
+margin: 0px;
+padding: 0px;
+background-image: url(./FountainImage_small.png);
+background-repeat: no-repeat;
+background-position: 5px 5px;
+font-family:Arial, Helvetica, Verdana, sans-serif;
+font-size: 75%;
+color:#575757;
+}
+
+.main {
+font-size: 1.2em;
+margin-left: 170px;
+margin-right: 20px;
+padding-bottom: 20px;
+}
+
+.main a {
+color: #6D96B8;
+text-decoration: none;
+}
+
+#hometitle {
+padding-top: 5px;
+}
+
+#hometitle a {
+color:silver;
+}
+
+a:hover {
+text-decoration: underline;
+}
+
+h1 {
+font-size: 3em;
+color: silver;
+}
+
+h2{
+font-size: 1.8em;
+}
+h3{
+font-size: 1.6em;
+}
+h4{
+font-size: 1.5em;
+}
+h5{
+font-size: 1.25em;
+}
+
+hr{
+ border: 0px; /* For Firefox and Opera */
+ border-top:  dotted 1px #6D96B8;
+ border-bottom: transparent;
+}
+
+ul, li{
+list-style-image: url(./ul.jpg);
+}
+
+input{
+border-bottom: 1px  solid silver;
+border-top: 0px;
+border-left: 0px;
+border-right: 0px;
+background-color: white;
+}
+input[type="submit"]{
+border: 1px  solid silver;
+background-color: white;
+}
+button {
+background-color: white;
+color: silver;
+background-image: none;
+border: none;
+cursor: pointer;
+height: 15px;
+width: 15px;
+}
+
+
+.leftNav {
+position: absolute;
+top: 240px;
+text-align: left;
+margin: 0px 0px 0px 10px;
+width: 150px;
+font-size: 1.3em;
+}
+
+.leftNav li {
+list-style-type: none;
+list-style-image: none;
+margin: 0px;
+padding: 0px;
+line-height: 1.5em;
+}
+
+.leftNav ul {
+margin: 0px;
+padding: 0px;
+}
+
+.leftNav p {
+}
+
+.leftNav li a{
+color: silver;
+text-decoration: none;
+padding: 0px;
+font-weight: bold;
+}
+
+.leftNav li a:hover {
+padding-left: 5px;
+text-decoration: none;
+}
+
+#footer {
+clear: both;
+text-align: right;
+color: gray;
+width: 100%;
+}
+
+#footer a {
+color: silver;
+text-decoration: none;
+}
+
+#footer a:hover {
+text-decoration: underline;
+}
+
+blockquote{
+float: right;
+margin: 15px 0px 15px 15px;
+width: 170px;
+font-size: 1.1em;
+color: gray;
+text-align: right;
+line-height: 1em;
+}
+
+blockquote:first-letter{
+font-size: 1.4em;
+}

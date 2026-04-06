@@ -1,0 +1,26 @@
+{
+  "name": "@new-free-bitcoins/backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:cache": "node --max-old-space-size=4096 ./node_modules/tsx/dist/cli.mjs watch src/index.ts",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.0.1",
+    "bitcoinjs-lib": "^6.1.7",
+    "electrum-client": "^0.0.6",
+    "express": "^4.21.2",
+    "pg": "^8.14.1",
+    "sequelize": "^6.37.7",
+    "sqlite3": "^5.1.7",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.1",
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  }
+}

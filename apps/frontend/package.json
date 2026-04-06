@@ -1,0 +1,24 @@
+{
+  "name": "@new-free-bitcoins/frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/build-donate-bundle.mjs",
+    "dev": "serve client -l 3000",
+    "build": "node -e \"console.log('Static frontend build not required')\""
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "serve": "^14.2.4"
+  },
+  "dependencies": {
+    "@scure/bip32": "^2.0.1",
+    "@scure/bip39": "^2.0.1",
+    "bip32": "^5.0.1",
+    "bip39": "^3.1.0",
+    "bitcoinjs-lib": "^7.0.1",
+    "buffer": "^6.0.3",
+    "qrcode": "^1.5.4",
+    "tiny-secp256k1": "^2.2.4"
+  }
+}
