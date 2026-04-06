@@ -9,6 +9,7 @@
     "dev": "turbo run dev --parallel --ui=tui",
     "dev:backend": "npm run dev --workspace @new-free-bitcoins/backend",
     "dev:backend:cache": "npm run dev:cache --workspace @new-free-bitcoins/backend",
+    "start:backend": "npm run build --workspace @new-free-bitcoins/backend && node apps/backend/dist/index.js",
     "build": "turbo run build"
   },
   "devDependencies": {
