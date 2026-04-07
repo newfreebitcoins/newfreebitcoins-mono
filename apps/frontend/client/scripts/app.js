@@ -10,9 +10,11 @@ const ICON_SVGS = {
     '<svg viewBox="0 0 256 256" aria-hidden="true"><path d="M218.83,103.77l-80-75.48a15.91,15.91,0,0,0-21.91,0l-80,75.48A16,16,0,0,0,32,115.43V208a16,16,0,0,0,16,16H96a16,16,0,0,0,16-16V160h32v48a16,16,0,0,0,16,16h48a16,16,0,0,0,16-16V115.43A16,16,0,0,0,218.83,103.77ZM208,208H160V160a16,16,0,0,0-16-16H112a16,16,0,0,0-16,16v48H48V115.43l80-75.48,80,75.48Z"></path></svg>'
 };
 
+const DONATE_BUNDLE_VERSION = "20260407-1";
+
 const initializerLoaders = {
   donate: async () =>
-    (await import("./generated/donate.bundle.js")).initDonatePage,
+    (await import(`./generated/donate.bundle.js?v=${DONATE_BUNDLE_VERSION}`)).initDonatePage,
   index: async () => (await import("./pages/index.js")).initIndexPage,
   "faucet-request": async () =>
     (await import("./pages/faucet-request.js")).initFaucetRequestPage,
