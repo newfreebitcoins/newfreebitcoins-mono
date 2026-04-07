@@ -41,6 +41,7 @@ const WIDTH: usize = 66;
 const GRAFFITI_MAX_LENGTH: usize = 80;
 const DONATION_HEARTBEAT_CONTEXT: &str = "new-free-bitcoins-donation-heartbeat";
 const START_LOOP_DELAY: Duration = Duration::from_secs(60);
+const DEFAULT_EXECUTION_POLL_MS: u64 = 15_000;
 
 #[derive(Parser)]
 #[command(name = "donor-cli")]
@@ -114,6 +115,9 @@ struct ConfigResponse {
 #[allow(non_snake_case)]
 struct DonationsConfig {
     heartbeatPollMs: u64,
+    #[allow(dead_code)]
+    #[serde(default = "default_execution_poll_ms")]
+    executionPollMs: u64,
     minimumGraffitiBtc: String,
 }
 
@@ -294,6 +298,10 @@ fn default_max_requests_per_tx() -> usize {
 
 fn default_fee_rate_sat_per_vbyte() -> u64 {
     2
+}
+
+fn default_execution_poll_ms() -> u64 {
+    DEFAULT_EXECUTION_POLL_MS
 }
 
 fn normalize_graffiti(value: &str) -> Result<String> {
@@ -1148,6 +1156,29 @@ async fn run_start_loop(
     }
 }
 
+async fn get_start_config_with_retry(client: &Client, backend: &str) -> (ConfigResponse, Network) {
+    loop {
+        let config_result: Result<(ConfigResponse, Network)> = async {
+            let config: ConfigResponse =
+                get_json(client, &format!("{backend}/api/config")).await?;
+            let backend_network = parse_network(&config.network)?;
+            Ok((config, backend_network))
+        }
+        .await;
+
+        match config_result {
+            Ok(value) => return value,
+            Err(error) => {
+                print_status(
+                    "error",
+                    &format!("{} Retrying in 60 seconds.", error),
+                );
+                sleep(START_LOOP_DELAY).await;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1155,110 +1186,27 @@ async fn main() -> Result<()> {
         .build()
         .context("Unable to create HTTP client")?;
 
-    let config: ConfigResponse =
-        get_json(&client, &format!("{}/api/config", cli.backend)).await?;
-    let backend_network = parse_network(&config.network)?;
-    let wallet_exists = find_wallet_source_path(cli.data_dir.as_ref(), backend_network)?.is_some();
-
-    if matches!(cli.command, Commands::Config) && !wallet_exists {
-        bail!("No donor wallet exists yet. Run any wallet command first to create or import one.");
-    }
-
-    if matches!(cli.command, Commands::Config) {
-        run_config_tui(cli.data_dir.as_ref(), backend_network)?;
-        return Ok(());
-    }
-
-    let wallet = load_or_create_wallet(cli.data_dir.as_ref(), cli.password.as_deref(), backend_network)?;
-    let (configured_max_requests, configured_fee_rate_sat_per_vbyte, configured_graffiti) =
-        load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
-    clear_screen()?;
-    print_header("NEW FREE BITCOINS", "Donor CLI");
-    print_kv("Backend", &cli.backend);
-    print_kv("Network", &config.network);
-    print_kv("Address", &wallet.address);
-    println!();
-
     match cli.command {
-        Commands::Balance => {
-            let balance: BalanceResponse = get_json(
-                &client,
-                &format!("{}/api/wallet/balance?address={}", cli.backend, wallet.address),
-            )
-            .await?;
-            print_section("Wallet Balance");
-            print_kv("Confirmed", &format_sats_as_btc(balance.confirmed.max(0) as u64, &config.unitLabel));
-            print_kv("Unconfirmed", &format_sats_as_btc(balance.unconfirmed.unsigned_abs(), &config.unitLabel));
-        }
-        Commands::Activity { limit } => {
-            let activity: ActivityResponse = get_json(
-                &client,
-                &format!(
-                    "{}/api/donations/activity?address={}&limit={}",
-                    cli.backend, wallet.address, limit
-                ),
-            )
-            .await?;
-            print_section("Recent Activity");
-            if activity.items.is_empty() {
-                println!("No activity yet.");
-            } else {
-                for item in activity.items {
-                    let label = match item.item_type.as_str() {
-                        "faucet_fulfillment" => format!(
-                            "Fulfilled {} faucet request{}",
-                            item.requestCount.unwrap_or(0),
-                            if item.requestCount.unwrap_or(0) == 1 { "" } else { "s" }
-                        ),
-                        "send" => "Sent".to_string(),
-                        _ => "Deposit".to_string(),
-                    };
-                    println!();
-                    print_kv("Type", &label);
-                    print_kv("Amount", &format_sats_as_btc(item.amountSats, &config.unitLabel));
-                    print_kv("When", &item.occurredAt.unwrap_or_else(|| "Pending".to_string()));
-                    print_kv("Tx", &item.explorerUrl.unwrap_or(item.txid));
-                }
-            }
-        }
-        Commands::Send { address, amount } => {
-            let destination = address_string(&address, wallet.network)?;
-            let utxos: WalletUtxosResponse = get_json(
-                &client,
-                &format!("{}/api/donations/wallet-utxos?address={}", cli.backend, wallet.address),
-            )
-            .await?;
-            print_section("Manual Send");
-            print_kv("Hint", "Use --amount all to send the maximum possible amount.");
-            let amount_sats = if amount.trim().eq_ignore_ascii_case("all") {
-                calculate_max_send_sats(&utxos.utxos, configured_fee_rate_sat_per_vbyte)?
-            } else {
-                parse_btc_amount_to_sats(&amount)?
-            };
-            let raw_tx =
-                build_tx(&wallet, &utxos.utxos, &[(destination, amount_sats)], configured_fee_rate_sat_per_vbyte)?;
-            let payload = SendTransactionRequest {
-                donorAddress: &wallet.address,
-                rawTransactionHex: &raw_tx,
-            };
-            let sent: SendTransactionResponse = post_json(
-                &client,
-                &format!("{}/api/donations/send-transaction", cli.backend),
-                &payload,
-            )
-            .await?;
-            print_section("Manual Send Complete");
-            print_kv("Amount", &format_sats_as_btc(amount_sats, &config.unitLabel));
-            print_kv("To", &address);
-            print_kv("Txid", &sent.txid);
-            if let Some(url) = sent.explorerUrl.as_deref() {
-                print_kv("Explorer", url);
-            }
-        }
         Commands::Start {
             max_requests,
             graffiti,
         } => {
+            let (config, backend_network) = get_start_config_with_retry(&client, &cli.backend).await;
+            let wallet = load_or_create_wallet(
+                cli.data_dir.as_ref(),
+                cli.password.as_deref(),
+                backend_network,
+            )?;
+            let (configured_max_requests, configured_fee_rate_sat_per_vbyte, configured_graffiti) =
+                load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
+
+            clear_screen()?;
+            print_header("NEW FREE BITCOINS", "Donor CLI");
+            print_kv("Backend", &cli.backend);
+            print_kv("Network", &config.network);
+            print_kv("Address", &wallet.address);
+            println!();
+
             let max_requests = max_requests.unwrap_or(configured_max_requests);
             let graffiti = if let Some(graffiti) = graffiti {
                 let graffiti = normalize_graffiti(&graffiti)?;
@@ -1297,7 +1245,144 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Commands::Config => unreachable!(),
+        Commands::Balance => {
+            let config: ConfigResponse =
+                get_json(&client, &format!("{}/api/config", cli.backend)).await?;
+            let backend_network = parse_network(&config.network)?;
+            let wallet = load_or_create_wallet(
+                cli.data_dir.as_ref(),
+                cli.password.as_deref(),
+                backend_network,
+            )?;
+
+            clear_screen()?;
+            print_header("NEW FREE BITCOINS", "Donor CLI");
+            print_kv("Backend", &cli.backend);
+            print_kv("Network", &config.network);
+            print_kv("Address", &wallet.address);
+            println!();
+
+            let balance: BalanceResponse = get_json(
+                &client,
+                &format!("{}/api/wallet/balance?address={}", cli.backend, wallet.address),
+            )
+            .await?;
+            print_section("Wallet Balance");
+            print_kv("Confirmed", &format_sats_as_btc(balance.confirmed.max(0) as u64, &config.unitLabel));
+            print_kv("Unconfirmed", &format_sats_as_btc(balance.unconfirmed.unsigned_abs(), &config.unitLabel));
+        }
+        Commands::Activity { limit } => {
+            let config: ConfigResponse =
+                get_json(&client, &format!("{}/api/config", cli.backend)).await?;
+            let backend_network = parse_network(&config.network)?;
+            let wallet = load_or_create_wallet(
+                cli.data_dir.as_ref(),
+                cli.password.as_deref(),
+                backend_network,
+            )?;
+
+            clear_screen()?;
+            print_header("NEW FREE BITCOINS", "Donor CLI");
+            print_kv("Backend", &cli.backend);
+            print_kv("Network", &config.network);
+            print_kv("Address", &wallet.address);
+            println!();
+
+            let activity: ActivityResponse = get_json(
+                &client,
+                &format!(
+                    "{}/api/donations/activity?address={}&limit={}",
+                    cli.backend, wallet.address, limit
+                ),
+            )
+            .await?;
+            print_section("Recent Activity");
+            if activity.items.is_empty() {
+                println!("No activity yet.");
+            } else {
+                for item in activity.items {
+                    let label = match item.item_type.as_str() {
+                        "faucet_fulfillment" => format!(
+                            "Fulfilled {} faucet request{}",
+                            item.requestCount.unwrap_or(0),
+                            if item.requestCount.unwrap_or(0) == 1 { "" } else { "s" }
+                        ),
+                        "send" => "Sent".to_string(),
+                        _ => "Deposit".to_string(),
+                    };
+                    println!();
+                    print_kv("Type", &label);
+                    print_kv("Amount", &format_sats_as_btc(item.amountSats, &config.unitLabel));
+                    print_kv("When", &item.occurredAt.unwrap_or_else(|| "Pending".to_string()));
+                    print_kv("Tx", &item.explorerUrl.unwrap_or(item.txid));
+                }
+            }
+        }
+        Commands::Send { address, amount } => {
+            let config: ConfigResponse =
+                get_json(&client, &format!("{}/api/config", cli.backend)).await?;
+            let backend_network = parse_network(&config.network)?;
+            let wallet = load_or_create_wallet(
+                cli.data_dir.as_ref(),
+                cli.password.as_deref(),
+                backend_network,
+            )?;
+            let (_configured_max_requests, configured_fee_rate_sat_per_vbyte, _configured_graffiti) =
+                load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
+
+            clear_screen()?;
+            print_header("NEW FREE BITCOINS", "Donor CLI");
+            print_kv("Backend", &cli.backend);
+            print_kv("Network", &config.network);
+            print_kv("Address", &wallet.address);
+            println!();
+
+            let destination = address_string(&address, wallet.network)?;
+            let utxos: WalletUtxosResponse = get_json(
+                &client,
+                &format!("{}/api/donations/wallet-utxos?address={}", cli.backend, wallet.address),
+            )
+            .await?;
+            print_section("Manual Send");
+            print_kv("Hint", "Use --amount all to send the maximum possible amount.");
+            let amount_sats = if amount.trim().eq_ignore_ascii_case("all") {
+                calculate_max_send_sats(&utxos.utxos, configured_fee_rate_sat_per_vbyte)?
+            } else {
+                parse_btc_amount_to_sats(&amount)?
+            };
+            let raw_tx =
+                build_tx(&wallet, &utxos.utxos, &[(destination, amount_sats)], configured_fee_rate_sat_per_vbyte)?;
+            let payload = SendTransactionRequest {
+                donorAddress: &wallet.address,
+                rawTransactionHex: &raw_tx,
+            };
+            let sent: SendTransactionResponse = post_json(
+                &client,
+                &format!("{}/api/donations/send-transaction", cli.backend),
+                &payload,
+            )
+            .await?;
+            print_section("Manual Send Complete");
+            print_kv("Amount", &format_sats_as_btc(amount_sats, &config.unitLabel));
+            print_kv("To", &address);
+            print_kv("Txid", &sent.txid);
+            if let Some(url) = sent.explorerUrl.as_deref() {
+                print_kv("Explorer", url);
+            }
+        }
+        Commands::Config => {
+            let config: ConfigResponse =
+                get_json(&client, &format!("{}/api/config", cli.backend)).await?;
+            let backend_network = parse_network(&config.network)?;
+            let wallet_exists =
+                find_wallet_source_path(cli.data_dir.as_ref(), backend_network)?.is_some();
+
+            if !wallet_exists {
+                bail!("No donor wallet exists yet. Run any wallet command first to create or import one.");
+            }
+
+            run_config_tui(cli.data_dir.as_ref(), backend_network)?;
+        }
     }
 
     Ok(())
