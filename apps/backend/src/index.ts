@@ -34,15 +34,6 @@ import {
   getXUserProfile,
   isVerifiedXUser
 } from "./lib/xOAuth.js";
-import {
-  type CachedFaucetRequest,
-  getAllCachedFaucetRequests,
-  getCachedFaucetRequest,
-  getCachedFaucetRequestsByFilter,
-  hydrateFaucetRequestCache,
-  removeCachedFaucetRequest,
-  upsertCachedFaucetRequest
-} from "./lib/faucetRequestCache.js";
 
 const config = loadConfig();
 const app = express();
@@ -144,7 +135,7 @@ function clearOAuthStateCookie(response: express.Response, state: string) {
 }
 
 function isRefreshSecretValid(
-  faucetRequest: InstanceType<typeof models.FaucetRequest> | CachedFaucetRequest,
+  faucetRequest: InstanceType<typeof models.FaucetRequest>,
   refreshToken: string
 ) {
   if (!refreshToken || !faucetRequest.refreshSecretHash) {
@@ -154,9 +145,7 @@ function isRefreshSecretValid(
   return hashRefreshSecret(refreshToken) === faucetRequest.refreshSecretHash;
 }
 
-function serializeFaucetRequest(
-  row: InstanceType<typeof models.FaucetRequest> | CachedFaucetRequest
-) {
+function serializeFaucetRequest(row: InstanceType<typeof models.FaucetRequest>) {
   const txid = row.fulfillmentTxId;
 
   return {
@@ -227,44 +216,8 @@ function getConfigPayload() {
   };
 }
 
-function syncCachedFaucetRequest(row: InstanceType<typeof models.FaucetRequest>) {
-  upsertCachedFaucetRequest({
-    id: row.id,
-    network: row.network,
-    xUserId: row.xUserId,
-    xUsername: row.xUsername,
-    xName: row.xName,
-    xCreatedAt: row.xCreatedAt,
-    xVerified: row.xVerified,
-    bitcoinAddress: row.bitcoinAddress,
-    amountSats: Number(row.amountSats ?? 0),
-    status: row.status,
-    expiresAt: row.expiresAt,
-    refreshSecretHash: row.refreshSecretHash,
-    reservedByAddress: row.reservedByAddress,
-    reservationExpiresAt: row.reservationExpiresAt,
-    fulfillmentTxId: row.fulfillmentTxId,
-    paidByAddress: row.paidByAddress,
-    paidAt: row.paidAt,
-    rejectionReason: row.rejectionReason,
-    createdAt: row.createdAt,
-    updatedAt: row.updatedAt
-  });
-}
-
 async function clearExpiredReservations() {
   const now = new Date();
-  const expiredIds = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) =>
-      row.status === "pending" &&
-      row.reservationExpiresAt != null &&
-      row.reservationExpiresAt < now
-  ).map((row) => row.id);
-
-  if (!expiredIds.length) {
-    return;
-  }
 
   await models.FaucetRequest.update(
     {
@@ -273,37 +226,18 @@ async function clearExpiredReservations() {
     },
     {
       where: {
-        id: {
-          [Op.in]: expiredIds
-        },
-        network: activeNetwork
+        network: activeNetwork,
+        status: "pending",
+        reservationExpiresAt: {
+          [Op.lt]: now
+        }
       }
     }
   );
-
-  for (const id of expiredIds) {
-    const row = getCachedFaucetRequest(id);
-    if (row) {
-      upsertCachedFaucetRequest({
-        ...row,
-        reservedByAddress: null,
-        reservationExpiresAt: null,
-        updatedAt: now
-      });
-    }
-  }
 }
 
 async function clearExpiredFaucetRequests() {
   const now = new Date();
-  const expiredIds = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) => row.status === "pending" && row.expiresAt != null && row.expiresAt < now
-  ).map((row) => row.id);
-
-  if (!expiredIds.length) {
-    return;
-  }
 
   await models.FaucetRequest.update(
     {
@@ -313,33 +247,22 @@ async function clearExpiredFaucetRequests() {
     },
     {
       where: {
-        id: {
-          [Op.in]: expiredIds
-        },
-        network: activeNetwork
+        network: activeNetwork,
+        status: "pending",
+        expiresAt: {
+          [Op.lt]: now
+        }
       }
     }
   );
-
-  for (const id of expiredIds) {
-    const row = getCachedFaucetRequest(id);
-    if (!row) {
-      continue;
-    }
-    upsertCachedFaucetRequest({
-      ...row,
-      status: "expired",
-      reservedByAddress: null,
-      reservationExpiresAt: null,
-      updatedAt: now
-    });
-  }
 }
 
 async function backfillFaucetRequestExpiry() {
-  const requestsWithoutExpiry = getAllCachedFaucetRequests().filter(
-    (row) => row.expiresAt == null
-  );
+  const requestsWithoutExpiry = await models.FaucetRequest.findAll({
+    where: {
+      expiresAt: null
+    } as never
+  });
 
   for (const faucetRequest of requestsWithoutExpiry) {
     const baseTime = faucetRequest.createdAt ?? faucetRequest.updatedAt ?? new Date();
@@ -365,12 +288,6 @@ async function backfillFaucetRequestExpiry() {
         }
       }
     );
-
-    upsertCachedFaucetRequest({
-      ...faucetRequest,
-      status: nextStatus,
-      expiresAt: nextExpiry
-    });
   }
 }
 
@@ -392,8 +309,6 @@ async function reconcileBroadcastRequests() {
     if (!request.fulfillmentTxId) {
       continue;
     }
-
-    syncCachedFaucetRequest(request);
     const existing = byTxId.get(request.fulfillmentTxId) ?? [];
     existing.push(request);
     byTxId.set(request.fulfillmentTxId, existing);
@@ -432,35 +347,6 @@ async function reconcileBroadcastRequests() {
           }
         );
 
-        for (const request of requests) {
-          if (request.updatedAt >= staleCutoff) {
-            syncCachedFaucetRequest(request);
-            continue;
-          }
-
-          upsertCachedFaucetRequest({
-            id: request.id,
-            network: request.network,
-            xUserId: request.xUserId,
-            xUsername: request.xUsername,
-            xName: request.xName,
-            xCreatedAt: request.xCreatedAt,
-            xVerified: request.xVerified,
-            bitcoinAddress: request.bitcoinAddress,
-            amountSats: Number(request.amountSats ?? 0),
-            status: "pending",
-            expiresAt: request.expiresAt,
-            refreshSecretHash: request.refreshSecretHash,
-            reservedByAddress: null,
-            reservationExpiresAt: null,
-            fulfillmentTxId: null,
-            paidByAddress: null,
-            paidAt: null,
-            rejectionReason: request.rejectionReason,
-            createdAt: request.createdAt,
-            updatedAt: new Date()
-          });
-        }
         continue;
       }
 
@@ -484,31 +370,6 @@ async function reconcileBroadcastRequests() {
           }
         }
       );
-
-      for (const request of requests) {
-        upsertCachedFaucetRequest({
-          id: request.id,
-          network: request.network,
-          xUserId: request.xUserId,
-          xUsername: request.xUsername,
-          xName: request.xName,
-          xCreatedAt: request.xCreatedAt,
-          xVerified: request.xVerified,
-          bitcoinAddress: request.bitcoinAddress,
-          amountSats: Number(request.amountSats ?? 0),
-          status: "paid",
-          expiresAt: request.expiresAt,
-          refreshSecretHash: request.refreshSecretHash,
-          reservedByAddress: request.reservedByAddress,
-          reservationExpiresAt: request.reservationExpiresAt,
-          fulfillmentTxId: request.fulfillmentTxId,
-          paidByAddress: request.paidByAddress,
-          paidAt,
-          rejectionReason: request.rejectionReason,
-          createdAt: request.createdAt,
-          updatedAt: new Date()
-        });
-      }
     } catch (error) {
       console.error("Unable to reconcile broadcast request", txid, error);
     }
@@ -523,80 +384,39 @@ async function reserveNextFaucetRequests(
     Date.now() + config.donations.reservationWindowMs
   );
   const now = new Date();
-  const candidates = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) =>
-      row.status === "pending" &&
-      (row.reservedByAddress == null ||
-        (row.reservationExpiresAt != null && row.reservationExpiresAt < now))
-  )
-    .sort((left, right) => left.createdAt.valueOf() - right.createdAt.valueOf())
-    .slice(0, Math.max(maxRequests * 5, maxRequests));
-
-  const reservedIds: number[] = [];
-
-  for (const candidate of candidates) {
-    if (reservedIds.length >= maxRequests) {
-      break;
-    }
-
-    const [updatedCount] = await models.FaucetRequest.update(
-      {
-        reservedByAddress: donorAddress,
-        reservationExpiresAt
-      },
-      {
-        where: {
-          id: candidate.id,
-          network: activeNetwork,
-          status: "pending",
-          [Op.or]: [
-            {
-              reservedByAddress: null
-            },
-            {
-              reservationExpiresAt: {
-                [Op.lt]: new Date()
-              }
+  const requests = await models.sequelize.transaction(async (transaction) => {
+    const rows = await models.FaucetRequest.findAll({
+      where: {
+        network: activeNetwork,
+        status: "pending",
+        [Op.or]: [
+          {
+            reservedByAddress: {
+              [Op.is]: null
             }
-          ]
-        }
-      }
-    );
+          },
+          {
+            reservationExpiresAt: {
+              [Op.lt]: now
+            }
+          }
+        ]
+      },
+      order: [["createdAt", "ASC"]],
+      limit: maxRequests,
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+      skipLocked: true
+    });
 
-    if (updatedCount > 0) {
-      reservedIds.push(candidate.id);
-      upsertCachedFaucetRequest({
-        ...candidate,
-        reservedByAddress: donorAddress,
-        reservationExpiresAt,
-        updatedAt: new Date()
-      });
+    for (const row of rows) {
+      row.reservedByAddress = donorAddress;
+      row.reservationExpiresAt = reservationExpiresAt;
+      await row.save({ transaction });
     }
-  }
 
-  if (!reservedIds.length) {
-    return {
-      reservationExpiresAt,
-      requests: []
-    };
-  }
-
-  const requests = reservedIds
-    .map((id) => getCachedFaucetRequest(id))
-    .filter(
-      (
-        row
-      ): row is NonNullable<ReturnType<typeof getCachedFaucetRequest>> =>
-        row != null &&
-        row.network === activeNetwork &&
-        row.reservedByAddress === donorAddress &&
-        row.status === "pending"
-    )
-    .sort(
-      (left: CachedFaucetRequest, right: CachedFaucetRequest) =>
-        left.createdAt.valueOf() - right.createdAt.valueOf()
-    );
+    return rows;
+  });
 
   return {
     reservationExpiresAt,
@@ -841,13 +661,17 @@ app.get("/api/donations/activity", async (request, response) => {
 
   try {
     const history = await getAddressHistory(address);
-    const paidRequests = getCachedFaucetRequestsByFilter(
-      activeNetwork,
-      (row) => row.paidByAddress === address && row.fulfillmentTxId != null
-    ).sort((left, right) => {
-      const leftTime = left.paidAt?.valueOf() ?? 0;
-      const rightTime = right.paidAt?.valueOf() ?? 0;
-      return rightTime - leftTime;
+    await reconcileBroadcastRequests();
+    const paidRequests = await models.FaucetRequest.findAll({
+      where: {
+        network: activeNetwork,
+        paidByAddress: address,
+        fulfillmentTxId: {
+          [Op.ne]: null
+        },
+        status: "paid"
+      },
+      order: [["paidAt", "DESC"], ["updatedAt", "DESC"]]
     });
 
     const paidByTxId = new Map<
@@ -1107,22 +931,20 @@ app.post("/api/donations/submit-fulfillment", async (request, response) => {
   }
 
   await clearExpiredReservations();
-
-  const reservedRequests = requestIds
-    .map((id: number) => getCachedFaucetRequest(id))
-    .filter(
-      (row: CachedFaucetRequest | null): row is CachedFaucetRequest =>
-        row != null &&
-        row.network === activeNetwork &&
-        row.status === "pending" &&
-        row.reservedByAddress === donorAddress &&
-        row.reservationExpiresAt != null &&
-        row.reservationExpiresAt > new Date()
-    )
-    .sort(
-      (left: CachedFaucetRequest, right: CachedFaucetRequest) =>
-        left.createdAt.valueOf() - right.createdAt.valueOf()
-    );
+  const reservedRequests = await models.FaucetRequest.findAll({
+    where: {
+      id: {
+        [Op.in]: requestIds
+      },
+      network: activeNetwork,
+      status: "pending",
+      reservedByAddress: donorAddress,
+      reservationExpiresAt: {
+        [Op.gt]: new Date()
+      }
+    },
+    order: [["createdAt", "ASC"]]
+  });
 
   if (reservedRequests.length !== requestIds.length) {
     response.status(409).json({ error: "reserved_requests_missing_or_expired" });
@@ -1193,22 +1015,6 @@ app.post("/api/donations/submit-fulfillment", async (request, response) => {
         }
       }
     );
-    for (const requestId of requestIds) {
-      const cached = getCachedFaucetRequest(requestId);
-      if (!cached) {
-        continue;
-      }
-      upsertCachedFaucetRequest({
-        ...cached,
-        status: "broadcast",
-        reservedByAddress: null,
-        reservationExpiresAt: null,
-        fulfillmentTxId: txid,
-        paidByAddress: donorAddress,
-        paidAt: null,
-        updatedAt: new Date()
-      });
-    }
 
     response.json({
       ok: true,
@@ -1224,11 +1030,16 @@ app.post("/api/donations/submit-fulfillment", async (request, response) => {
 app.get("/api/stats", async (_request, response) => {
   await clearExpiredFaucetRequests();
   await clearExpiredReservations();
+  await reconcileBroadcastRequests();
   const donationBalance = getDonationBalanceCache();
-  const pendingRequests = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) => row.status === "pending" || row.status === "broadcast"
-  );
+  const pendingRequests = await models.FaucetRequest.findAll({
+    where: {
+      network: activeNetwork,
+      status: {
+        [Op.in]: ["pending", "broadcast"]
+      }
+    }
+  });
 
   const totalPendingSats = pendingRequests.reduce(
     (sum, request) => sum + Number(request.amountSats ?? 0),
@@ -1275,10 +1086,15 @@ app.get("/api/faucet/request/:requestId", async (request, response) => {
   }
 
   await clearExpiredFaucetRequests();
+  await reconcileBroadcastRequests();
+  const faucetRequest = await models.FaucetRequest.findOne({
+    where: {
+      id: requestId,
+      network: activeNetwork
+    }
+  });
 
-  const faucetRequest = getCachedFaucetRequest(requestId);
-
-  if (!faucetRequest || faucetRequest.network !== activeNetwork) {
+  if (!faucetRequest) {
     response.status(404).json({ error: "request_not_found" });
     return;
   }
@@ -1327,7 +1143,6 @@ app.post("/api/faucet/request/:requestId/refresh", async (request, response) => 
   faucetRequest.reservedByAddress = null;
   faucetRequest.reservationExpiresAt = null;
   await faucetRequest.save();
-  syncCachedFaucetRequest(faucetRequest);
 
   response.json({
     ok: true,
@@ -1374,7 +1189,6 @@ app.post("/api/faucet/request/:requestId/cancel", async (request, response) => {
   }
 
   await faucetRequest.destroy();
-  removeCachedFaucetRequest(requestId);
 
   response.json({
     ok: true
@@ -1563,7 +1377,6 @@ app.get("/api/x_oauth2_callback", async (request, response) => {
       );
     });
 
-    syncCachedFaucetRequest(createdRequest);
     await oauthState.destroy();
     clearOAuthStateCookie(response, state);
 
@@ -1591,23 +1404,30 @@ app.get("/api/x_oauth2_callback", async (request, response) => {
 app.get("/api/faucet/pending-requests", async (request, response) => {
   await clearExpiredFaucetRequests();
   await clearExpiredReservations();
+  await reconcileBroadcastRequests();
   const page = Math.max(Number(request.query.page ?? 1) || 1, 1);
   const pageSize = Math.min(Math.max(Number(request.query.pageSize ?? 10) || 10, 1), 50);
   const offset = (page - 1) * pageSize;
 
-  const rows = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) => row.status === "pending" && row.reservedByAddress == null
-  ).sort((left, right) => left.createdAt.valueOf() - right.createdAt.valueOf());
-  const count = rows.length;
-  const pagedRows = rows.slice(offset, offset + pageSize);
+  const { rows, count } = await models.FaucetRequest.findAndCountAll({
+    where: {
+      network: activeNetwork,
+      status: "pending",
+      reservedByAddress: {
+        [Op.is]: null
+      }
+    },
+    order: [["createdAt", "ASC"]],
+    offset,
+    limit: pageSize
+  });
 
   response.json({
     page,
     pageSize,
     totalCount: count,
     totalPages: Math.max(Math.ceil(count / pageSize), 1),
-    requests: pagedRows.map((row) => ({
+    requests: rows.map((row) => ({
       id: row.id,
       xUsername: row.xUsername,
       xName: row.xName,
@@ -1619,27 +1439,30 @@ app.get("/api/faucet/pending-requests", async (request, response) => {
 });
 
 app.get("/api/faucet/recent-sends", async (request, response) => {
+  await reconcileBroadcastRequests();
   const page = Math.max(Number(request.query.page ?? 1) || 1, 1);
   const pageSize = Math.min(Math.max(Number(request.query.pageSize ?? 10) || 10, 1), 50);
   const offset = (page - 1) * pageSize;
 
-  const rows = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) => row.status === "paid" && row.fulfillmentTxId != null
-  ).sort((left, right) => {
-    const leftTime = left.paidAt?.valueOf() ?? left.updatedAt.valueOf();
-    const rightTime = right.paidAt?.valueOf() ?? right.updatedAt.valueOf();
-    return rightTime - leftTime;
+  const { rows, count } = await models.FaucetRequest.findAndCountAll({
+    where: {
+      network: activeNetwork,
+      status: "paid",
+      fulfillmentTxId: {
+        [Op.ne]: null
+      }
+    },
+    order: [["paidAt", "DESC"], ["updatedAt", "DESC"]],
+    offset,
+    limit: pageSize
   });
-  const count = rows.length;
-  const pagedRows = rows.slice(offset, offset + pageSize);
 
   response.json({
     page,
     pageSize,
     totalCount: count,
     totalPages: Math.max(Math.ceil(count / pageSize), 1),
-    sends: pagedRows.map((row) => ({
+    sends: rows.map((row) => ({
       id: row.id,
       xUsername: row.xUsername,
       bitcoinAddress: row.bitcoinAddress,
@@ -1655,7 +1478,6 @@ app.get("/api/faucet/recent-sends", async (request, response) => {
 
 async function start() {
   await databaseConnection();
-  await hydrateFaucetRequestCache(models);
   await backfillFaucetRequestExpiry();
   await startDonationRuntime();
   await clearExpiredFaucetRequests();

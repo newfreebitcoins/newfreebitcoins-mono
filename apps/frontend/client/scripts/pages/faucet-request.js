@@ -32,7 +32,7 @@ const ERROR_MESSAGES = {
   x_account_not_verified:
     "That X account does not meet the verification requirement for this faucet. You currently need X Premium to use it.",
   request_already_pending:
-    "That X account is not allowed to create another faucet request right now.",
+    "This X account has already claimed from the faucet.",
   x_oauth_denied: "X authorization was canceled.",
   x_oauth_invalid_callback: "The X callback was incomplete.",
   x_oauth_state_missing: "The X session expired. Please try again.",
