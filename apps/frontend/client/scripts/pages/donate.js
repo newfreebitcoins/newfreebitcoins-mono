@@ -60,6 +60,7 @@ const WALLET_ACTIVITY_PAGE_SIZE = 8;
 const DONATE_HASHES = {
   onboarding: "#donate",
   importWallet: "#import-wallet",
+  importPassword: "#import-wallet-password",
   createPassword: "#create-wallet-password",
   createMnemonic: "#create-wallet-mnemonic",
   createWords: "#create-wallet-confirm",
@@ -378,6 +379,13 @@ function parseBtcAmountToSats(value) {
   const normalizedFractional = `${fractionalPart}00000000`.slice(0, 8);
 
   return Number(BigInt(wholePart) * 100000000n + BigInt(normalizedFractional));
+}
+
+function normalizeMnemonicInput(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 }
 
 function parseFeeRateSatPerVbyte(value) {
@@ -856,6 +864,13 @@ function showConfirmationStep(stepName) {
 function showCreateWalletStep(stepName) {
   showSection("confirm");
   showConfirmationStep(stepName);
+
+  const continueButton = $("[data-confirm-next]");
+
+  if (continueButton) {
+    continueButton.textContent =
+      pendingWalletMode === "create" ? "Continue" : "Import Donation Wallet";
+  }
 }
 
 function renderMnemonicWords() {
@@ -938,10 +953,7 @@ function syncPasswordStepState() {
 }
 
 function syncImportStepState() {
-  const mnemonic = String($("[data-import-mnemonic]")?.value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
+  const mnemonic = normalizeMnemonicInput($("[data-import-mnemonic]")?.value ?? "");
   const continueButton = $("[data-import-wallet]");
 
   if (continueButton) {
@@ -1003,7 +1015,7 @@ function syncSaveWalletState() {
 }
 
 function prepareMnemonicFlow(mnemonic, mode = "create") {
-  pendingMnemonic = mnemonic.trim().toLowerCase();
+  pendingMnemonic = normalizeMnemonicInput(mnemonic);
   pendingWalletMode = mode;
   confirmationIndexes =
     mode === "create"
@@ -1032,7 +1044,7 @@ function prepareMnemonicFlow(mnemonic, mode = "create") {
   }
   syncPasswordStepState();
   setMessage("", "");
-  setHash(DONATE_HASHES.createPassword);
+  setHash(mode === "create" ? DONATE_HASHES.createPassword : DONATE_HASHES.importPassword);
 }
 
 function clearUnlockedWalletRuntime() {
@@ -1630,6 +1642,17 @@ function applyHashRoute() {
   if (hash === DONATE_HASHES.importWallet) {
     setMessage("", "");
     showSection("import");
+    syncImportStepState();
+    return;
+  }
+
+  if (hash === DONATE_HASHES.importPassword) {
+    if (!hasPendingMnemonic || pendingWalletMode !== "import") {
+      setHash(DONATE_HASHES.importWallet);
+      return;
+    }
+
+    showCreateWalletStep("password");
     return;
   }
 
@@ -1650,7 +1673,7 @@ function applyHashRoute() {
     }
 
     if (pendingWalletMode !== "create") {
-      setHash(DONATE_HASHES.createPassword);
+      setHash(DONATE_HASHES.importPassword);
       return;
     }
 
@@ -1665,7 +1688,7 @@ function applyHashRoute() {
     }
 
     if (pendingWalletMode !== "create") {
-      setHash(DONATE_HASHES.createPassword);
+      setHash(DONATE_HASHES.importPassword);
       return;
     }
 
@@ -1741,6 +1764,11 @@ export async function initDonatePage() {
   passwordInput?.addEventListener("keydown", handlePasswordStepSubmit);
   confirmPasswordInput?.addEventListener("keydown", handlePasswordStepSubmit);
   importMnemonicInput?.addEventListener("input", syncImportStepState);
+  importMnemonicInput?.addEventListener("change", syncImportStepState);
+  importMnemonicInput?.addEventListener("keyup", syncImportStepState);
+  importMnemonicInput?.addEventListener("paste", () => {
+    window.setTimeout(syncImportStepState, 0);
+  });
   importMnemonicInput?.addEventListener("keydown", (event) =>
     handleEnterSubmit(event, "[data-import-wallet]")
   );
@@ -1763,10 +1791,7 @@ export async function initDonatePage() {
   });
 
   importButton?.addEventListener("click", () => {
-    const mnemonic = String($("[data-import-mnemonic]")?.value ?? "")
-      .trim()
-      .toLowerCase()
-      .replace(/\s+/g, " ");
+    const mnemonic = normalizeMnemonicInput($("[data-import-mnemonic]")?.value ?? "");
 
     if (!validateMnemonic(mnemonic, wordlist)) {
       setMessage("Please enter a valid BIP39 mnemonic phrase.", "error");
@@ -1806,7 +1831,11 @@ export async function initDonatePage() {
         return;
       }
 
-      setHash(DONATE_HASHES.createPassword);
+      setHash(
+        pendingWalletMode === "create"
+          ? DONATE_HASHES.createPassword
+          : DONATE_HASHES.importWallet
+      );
     });
   }
 
