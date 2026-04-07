@@ -40,6 +40,7 @@ const DUST_THRESHOLD: u64 = 546;
 const WIDTH: usize = 66;
 const GRAFFITI_MAX_LENGTH: usize = 80;
 const DONATION_HEARTBEAT_CONTEXT: &str = "new-free-bitcoins-donation-heartbeat";
+const START_LOOP_DELAY: Duration = Duration::from_secs(60);
 
 #[derive(Parser)]
 #[command(name = "donor-cli")]
@@ -113,7 +114,6 @@ struct ConfigResponse {
 #[allow(non_snake_case)]
 struct DonationsConfig {
     heartbeatPollMs: u64,
-    executionPollMs: u64,
     minimumGraffitiBtc: String,
 }
 
@@ -1017,123 +1017,134 @@ async fn run_start_loop(
     let mut pending_txid: Option<String> = None;
 
     loop {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .context("System time is invalid")?
-            .as_millis();
-        if now.saturating_sub(last_heartbeat_at) >= config.donations.heartbeatPollMs as u128 {
-            let challenge: ChallengeResponse =
-                get_json(client, &format!("{backend}/api/donations/challenge")).await?;
-            let challenge_hex = challenge.challenge;
-            let digest = heartbeat_message_digest(&challenge_hex, graffiti);
-            let message = Message::from_digest_slice(&digest)?;
-            let signature: Signature = secp.sign_ecdsa(&message, &private_key.inner);
-            let payload = HeartbeatRequest {
-                address: &wallet.address,
-                publicKeyHex: hex::encode(public_key.to_bytes()),
-                challenge: &challenge_hex,
-                signatureHex: hex::encode(signature.serialize_compact()),
-                graffiti,
-            };
-            let _: serde_json::Value =
-                post_json(client, &format!("{backend}/api/donations/heartbeat"), &payload)
-                    .await?;
-            last_heartbeat_at = now;
-            print_status("heartbeat", &format!("Accepted for {}", wallet.address));
-        }
+        let cycle_result: Result<()> = async {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("System time is invalid")?
+                .as_millis();
 
-        if let Some(txid) = pending_txid.clone() {
-            let status: TxStatusResponse = get_json(
+            if now.saturating_sub(last_heartbeat_at) >= config.donations.heartbeatPollMs as u128 {
+                let challenge: ChallengeResponse =
+                    get_json(client, &format!("{backend}/api/donations/challenge")).await?;
+                let challenge_hex = challenge.challenge;
+                let digest = heartbeat_message_digest(&challenge_hex, graffiti);
+                let message = Message::from_digest_slice(&digest)?;
+                let signature: Signature = secp.sign_ecdsa(&message, &private_key.inner);
+                let payload = HeartbeatRequest {
+                    address: &wallet.address,
+                    publicKeyHex: hex::encode(public_key.to_bytes()),
+                    challenge: &challenge_hex,
+                    signatureHex: hex::encode(signature.serialize_compact()),
+                    graffiti,
+                };
+                let _: serde_json::Value =
+                    post_json(client, &format!("{backend}/api/donations/heartbeat"), &payload)
+                        .await?;
+                last_heartbeat_at = now;
+                print_status("heartbeat", &format!("Accepted for {}", wallet.address));
+            }
+
+            if let Some(txid) = pending_txid.clone() {
+                let status: TxStatusResponse = get_json(
+                    client,
+                    &format!("{backend}/api/donations/tx-status?txid={txid}"),
+                )
+                .await?;
+
+                if status.confirmed {
+                    println!(
+                        "[confirmed] donation tx {}{}",
+                        status.txid,
+                        status
+                            .explorerUrl
+                            .as_deref()
+                            .map(|url| format!(" ({url})"))
+                            .unwrap_or_default()
+                    );
+                    pending_txid = None;
+                } else {
+                    println!(
+                        "[pending] waiting for confirmation on {} ({} confirmations)",
+                        status.txid, status.confirmations
+                    );
+                    return Ok(());
+                }
+            }
+
+            let reserve_payload = ReserveRequest {
+                donorAddress: &wallet.address,
+                maxRequests: max_requests,
+            };
+            let reserve: ReserveRequestsResponse = post_json(
                 client,
-                &format!("{backend}/api/donations/tx-status?txid={txid}"),
+                &format!("{backend}/api/donations/reserve-requests"),
+                &reserve_payload,
             )
             .await?;
 
-            if status.confirmed {
-                println!(
-                    "[confirmed] donation tx {}{}",
-                    status.txid,
-                    status
-                        .explorerUrl
-                        .as_deref()
-                        .map(|url| format!(" ({url})"))
-                        .unwrap_or_default()
-                );
-                pending_txid = None;
-            } else {
-                println!(
-                    "[pending] waiting for confirmation on {} ({} confirmations)",
-                    status.txid, status.confirmations
-                );
-                sleep(Duration::from_millis(config.donations.executionPollMs)).await;
-                continue;
+            if reserve.requests.is_empty() {
+                print_status("queue", "No queued faucet requests right now.");
+                return Ok(());
             }
+
+            let utxos: WalletUtxosResponse = get_json(
+                client,
+                &format!("{backend}/api/donations/wallet-utxos?address={}", wallet.address),
+            )
+            .await?;
+
+            let outputs = reserve
+                .requests
+                .iter()
+                .map(|request| {
+                    Ok((
+                        address_string(&request.bitcoinAddress, wallet.network)?,
+                        request.amountSats,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+
+            let raw_tx = build_tx(
+                wallet,
+                &utxos.utxos,
+                &outputs,
+                fee_rate_sat_per_vbyte,
+            )?;
+
+            let submit_payload = FulfillmentSubmitRequest {
+                donorAddress: &wallet.address,
+                requestIds: reserve.requests.iter().map(|request| request.id).collect(),
+                rawTransactionHex: &raw_tx,
+            };
+            let submit: SendTransactionResponse = post_json(
+                client,
+                &format!("{backend}/api/donations/submit-fulfillment"),
+                &submit_payload,
+            )
+            .await?;
+
+            println!(
+                "[broadcast] faucet fulfillment tx {}{}",
+                submit.txid,
+                submit
+                    .explorerUrl
+                    .as_deref()
+                    .map(|url| format!(" ({url})"))
+                    .unwrap_or_default()
+            );
+            pending_txid = Some(submit.txid);
+            Ok(())
+        }
+        .await;
+
+        if let Err(error) = cycle_result {
+            print_status(
+                "error",
+                &format!("{} Retrying in 60 seconds.", error),
+            );
         }
 
-        let reserve_payload = ReserveRequest {
-            donorAddress: &wallet.address,
-            maxRequests: max_requests,
-        };
-        let reserve: ReserveRequestsResponse = post_json(
-            client,
-            &format!("{backend}/api/donations/reserve-requests"),
-            &reserve_payload,
-        )
-        .await?;
-
-        if reserve.requests.is_empty() {
-            print_status("queue", "No queued faucet requests right now.");
-            sleep(Duration::from_millis(config.donations.executionPollMs)).await;
-            continue;
-        }
-
-        let utxos: WalletUtxosResponse = get_json(
-            client,
-            &format!("{backend}/api/donations/wallet-utxos?address={}", wallet.address),
-        )
-        .await?;
-
-        let outputs = reserve
-            .requests
-            .iter()
-            .map(|request| {
-                Ok((
-                    address_string(&request.bitcoinAddress, wallet.network)?,
-                    request.amountSats,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let raw_tx = build_tx(
-            wallet,
-            &utxos.utxos,
-            &outputs,
-            fee_rate_sat_per_vbyte,
-        )?;
-
-        let submit_payload = FulfillmentSubmitRequest {
-            donorAddress: &wallet.address,
-            requestIds: reserve.requests.iter().map(|request| request.id).collect(),
-            rawTransactionHex: &raw_tx,
-        };
-        let submit: SendTransactionResponse = post_json(
-            client,
-            &format!("{backend}/api/donations/submit-fulfillment"),
-            &submit_payload,
-        )
-        .await?;
-
-        println!(
-            "[broadcast] faucet fulfillment tx {}{}",
-            submit.txid,
-            submit
-                .explorerUrl
-                .as_deref()
-                .map(|url| format!(" ({url})"))
-                .unwrap_or_default()
-        );
-        pending_txid = Some(submit.txid);
-        sleep(Duration::from_millis(config.donations.executionPollMs)).await;
+        sleep(START_LOOP_DELAY).await;
     }
 }
 
