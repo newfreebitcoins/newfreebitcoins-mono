@@ -69,7 +69,9 @@ function renderRows(wallets) {
     addressWrap.className = "wallet-address";
     activeDot.className = "active-dot";
     activeDot.setAttribute("aria-hidden", "true");
-    addressText.textContent = wallet.address;
+    addressText.textContent = wallet.graffiti
+      ? `${wallet.address} (${wallet.graffiti})`
+      : wallet.address;
 
     addressWrap.append(activeDot, addressText);
     addressCell.append(addressWrap);

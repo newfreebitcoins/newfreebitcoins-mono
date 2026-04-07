@@ -38,6 +38,8 @@ const STORAGE_FILE: &str = "donor-wallet.json";
 const PBKDF2_ITERATIONS: u32 = 250_000;
 const DUST_THRESHOLD: u64 = 546;
 const WIDTH: usize = 66;
+const GRAFFITI_MAX_LENGTH: usize = 80;
+const DONATION_HEARTBEAT_CONTEXT: &str = "new-free-bitcoins-donation-heartbeat";
 
 #[derive(Parser)]
 #[command(name = "donor-cli")]
@@ -58,6 +60,8 @@ enum Commands {
     Start {
         #[arg(long)]
         max_requests: Option<usize>,
+        #[arg(long)]
+        graffiti: Option<String>,
     },
     Balance,
     Activity {
@@ -86,6 +90,8 @@ struct StoredWallet {
     max_requests_per_tx: usize,
     #[serde(default = "default_fee_rate_sat_per_vbyte")]
     fee_rate_sat_per_vbyte: u64,
+    #[serde(default)]
+    graffiti: String,
 }
 
 #[derive(Debug, Clone)]
@@ -108,6 +114,7 @@ struct ConfigResponse {
 struct DonationsConfig {
     heartbeatPollMs: u64,
     executionPollMs: u64,
+    minimumGraffitiBtc: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +194,7 @@ struct HeartbeatRequest<'a> {
     publicKeyHex: String,
     challenge: &'a str,
     signatureHex: String,
+    graffiti: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -232,6 +240,16 @@ fn default_max_requests_per_tx() -> usize {
 
 fn default_fee_rate_sat_per_vbyte() -> u64 {
     2
+}
+
+fn normalize_graffiti(value: &str) -> Result<String> {
+    let normalized = value.trim().to_string();
+
+    if normalized.chars().count() > GRAFFITI_MAX_LENGTH {
+        bail!("Graffiti must be {GRAFFITI_MAX_LENGTH} characters or fewer.");
+    }
+
+    Ok(normalized)
 }
 
 fn format_sats_as_btc(sats: u64, unit_label: &str) -> String {
@@ -396,6 +414,15 @@ fn prompt_u64_with_default(prompt: &str, default: u64, min: u64, max: u64) -> Re
     Ok(value.clamp(min, max))
 }
 
+fn prompt_string_with_default(prompt: &str, default: &str) -> Result<String> {
+    let answer = prompt_line(&format!("{prompt} [{default}]: "))?;
+    if answer.trim().is_empty() {
+        return Ok(default.to_string());
+    }
+
+    Ok(answer.trim().to_string())
+}
+
 fn prompt_password_value(prompt: &str) -> Result<String> {
     rpassword::prompt_password(prompt).context("Unable to read password input")
 }
@@ -475,6 +502,7 @@ fn save_wallet(
         iv,
         max_requests_per_tx: default_max_requests_per_tx(),
         fee_rate_sat_per_vbyte: default_fee_rate_sat_per_vbyte(),
+        graffiti: String::new(),
     };
 
     fs::write(&path, serde_json::to_vec_pretty(&stored)?).context("Unable to save wallet")?;
@@ -619,9 +647,13 @@ fn load_or_create_wallet(
     Ok(DecryptedWallet { mnemonic, address, network: backend_network })
 }
 
-fn load_wallet_settings(data_dir: Option<&PathBuf>) -> Result<(usize, u64)> {
+fn load_wallet_settings(data_dir: Option<&PathBuf>) -> Result<(usize, u64, String)> {
     let stored = load_stored_wallet(data_dir)?;
-    Ok((stored.max_requests_per_tx, stored.fee_rate_sat_per_vbyte))
+    Ok((
+        stored.max_requests_per_tx,
+        stored.fee_rate_sat_per_vbyte,
+        stored.graffiti,
+    ))
 }
 
 fn run_config_tui(data_dir: Option<&PathBuf>) -> Result<()> {
@@ -634,6 +666,14 @@ fn run_config_tui(data_dir: Option<&PathBuf>) -> Result<()> {
     print_section("Current Settings");
     print_kv("Max Requests", &stored.max_requests_per_tx.to_string());
     print_kv("Sats/vbyte", &stored.fee_rate_sat_per_vbyte.to_string());
+    print_kv(
+        "Graffiti",
+        if stored.graffiti.is_empty() {
+            "(none)"
+        } else {
+            &stored.graffiti
+        }
+    );
     println!();
     print_section("Update Settings");
     stored.max_requests_per_tx = prompt_usize_with_default(
@@ -648,11 +688,23 @@ fn run_config_tui(data_dir: Option<&PathBuf>) -> Result<()> {
         1,
         500
     )?;
+    stored.graffiti = normalize_graffiti(&prompt_string_with_default(
+        "Graffiti",
+        &stored.graffiti,
+    )?)?;
     write_stored_wallet(data_dir, &stored)?;
     println!();
     print_success("Wallet settings saved.");
     print_kv("Max Requests", &stored.max_requests_per_tx.to_string());
     print_kv("Sats/vbyte", &stored.fee_rate_sat_per_vbyte.to_string());
+    print_kv(
+        "Graffiti",
+        if stored.graffiti.is_empty() {
+            "(none)"
+        } else {
+            &stored.graffiti
+        }
+    );
     Ok(())
 }
 
@@ -813,6 +865,16 @@ fn estimate_fee(input_count: u64, output_count: u64, fee_rate_sat_per_vbyte: u64
     virtual_bytes * fee_rate_sat_per_vbyte
 }
 
+fn heartbeat_message_digest(challenge: &str, graffiti: &str) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(DONATION_HEARTBEAT_CONTEXT.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(challenge.as_bytes());
+    hasher.update([0u8]);
+    hasher.update(graffiti.as_bytes());
+    hasher.finalize().into()
+}
+
 async fn run_start_loop(
     client: &Client,
     backend: &str,
@@ -820,6 +882,7 @@ async fn run_start_loop(
     wallet: &DecryptedWallet,
     max_requests: usize,
     fee_rate_sat_per_vbyte: u64,
+    graffiti: &str,
 ) -> Result<()> {
     let secp = Secp256k1::new();
     let (_address, _path, private_key, public_key) =
@@ -836,8 +899,7 @@ async fn run_start_loop(
             let challenge: ChallengeResponse =
                 get_json(client, &format!("{backend}/api/donations/challenge")).await?;
             let challenge_hex = challenge.challenge;
-            let challenge_bytes = hex::decode(&challenge_hex)?;
-            let digest = Sha256::digest(challenge_bytes);
+            let digest = heartbeat_message_digest(&challenge_hex, graffiti);
             let message = Message::from_digest_slice(&digest)?;
             let signature: Signature = secp.sign_ecdsa(&message, &private_key.inner);
             let payload = HeartbeatRequest {
@@ -845,6 +907,7 @@ async fn run_start_loop(
                 publicKeyHex: hex::encode(public_key.to_bytes()),
                 challenge: &challenge_hex,
                 signatureHex: hex::encode(signature.serialize_compact()),
+                graffiti,
             };
             let _: serde_json::Value =
                 post_json(client, &format!("{backend}/api/donations/heartbeat"), &payload)
@@ -970,7 +1033,7 @@ async fn main() -> Result<()> {
     }
 
     let wallet = load_or_create_wallet(cli.data_dir.as_ref(), cli.password.as_deref(), backend_network)?;
-    let (configured_max_requests, configured_fee_rate_sat_per_vbyte) =
+    let (configured_max_requests, configured_fee_rate_sat_per_vbyte, configured_graffiti) =
         load_wallet_settings(cli.data_dir.as_ref())?;
     clear_screen()?;
     print_header("NEW FREE BITCOINS", "Donor CLI");
@@ -1048,12 +1111,36 @@ async fn main() -> Result<()> {
                 print_kv("Explorer", url);
             }
         }
-        Commands::Start { max_requests } => {
+        Commands::Start {
+            max_requests,
+            graffiti,
+        } => {
             let max_requests = max_requests.unwrap_or(configured_max_requests);
+            let graffiti = if let Some(graffiti) = graffiti {
+                let graffiti = normalize_graffiti(&graffiti)?;
+                let mut stored = load_stored_wallet(cli.data_dir.as_ref())?;
+                stored.graffiti = graffiti.clone();
+                write_stored_wallet(cli.data_dir.as_ref(), &stored)?;
+                graffiti
+            } else {
+                configured_graffiti.clone()
+            };
             print_section("Donation Loop");
             print_kv("Mode", "Running");
             print_kv("Max Requests", &max_requests.to_string());
             print_kv("Sats/vbyte", &configured_fee_rate_sat_per_vbyte.to_string());
+            print_kv(
+                "Graffiti",
+                if graffiti.is_empty() {
+                    "(none)"
+                } else {
+                    &graffiti
+                }
+            );
+            print_kv(
+                "Graffiti Min",
+                &format!("{} {}", config.donations.minimumGraffitiBtc, config.unitLabel)
+            );
             println!();
             run_start_loop(
                 &client,
@@ -1061,7 +1148,8 @@ async fn main() -> Result<()> {
                 &config,
                 &wallet,
                 max_requests,
-                configured_fee_rate_sat_per_vbyte
+                configured_fee_rate_sat_per_vbyte,
+                &graffiti
             )
             .await?;
         }

@@ -1,4 +1,4 @@
-import { getAppConfig } from "./api.js";
+import { getRuntimeConfig } from "./api.js";
 import { formatCoinAmount } from "./consts.js";
 
 const ICON_SVGS = {
@@ -27,7 +27,7 @@ const initializerLoaders = {
 };
 
 async function hydrateSharedUi() {
-  const result = await getAppConfig();
+  const result = await getRuntimeConfig();
 
   if (!result.ok) {
     return;

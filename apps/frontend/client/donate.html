@@ -187,6 +187,23 @@
               <button type="button" data-edit-fee-rate>Edit</button>
               <button type="button" data-save-fee-rate hidden>Save</button>
             </div>
+            <div class="max-requests-row">
+              <label for="graffitiInput"><b>Graffiti:</b></label>
+              <input
+                id="graffitiInput"
+                data-graffiti-input
+                type="text"
+                value=""
+                maxlength="80"
+                disabled
+              />
+              <button type="button" data-edit-graffiti>Edit</button>
+              <button type="button" data-save-graffiti hidden>Save</button>
+            </div>
+            <p>
+              Shown on the stats page once this wallet has at least
+              <span data-graffiti-threshold>0.00100000 BTC</span>.
+            </p>
             <div class="step-actions">
               <button type="button" data-start-donations>Start Fulfilling Donations</button>
               <button type="button" data-stop-donations disabled>Stop</button>

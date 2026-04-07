@@ -25,7 +25,7 @@ import {
   getPreviousOutput,
   getTransactionHex,
   getTransactionStatus
-} from "./lib/electrum.js";
+} from "./lib/esplora.js";
 import {
   buildXAuthorizationUrl,
   createOAuthState,
@@ -48,8 +48,13 @@ const app = express();
 const activeNetwork = config.network;
 const OAUTH_COOKIE_MAX_AGE_MS = 10 * 60 * 1000;
 
-function getActiveElectrumConfig() {
-  return config.electrum[config.network];
+function getActiveElectrsConfig() {
+  return config.electrs[config.network];
+}
+
+function getActiveElectrsPublicBaseUrl() {
+  const activeElectrsConfig = getActiveElectrsConfig();
+  return activeElectrsConfig.publicBaseUrl ?? activeElectrsConfig.baseUrl;
 }
 
 function getActiveExplorerConfig() {
@@ -191,7 +196,9 @@ function getConfigPayload() {
   return {
     network: config.network,
     unitLabel: getUnitLabel(),
-    electrum: getActiveElectrumConfig(),
+    electrs: {
+      apiBaseUrl: getActiveElectrsPublicBaseUrl()
+    },
     explorer: getActiveExplorerConfig(),
     faucet: {
       totalBtc: donationBalance.totalBtc,
@@ -212,7 +219,8 @@ function getConfigPayload() {
       executionPollMs: config.donations.executionPollMs,
       reservationWindowMs: config.donations.reservationWindowMs,
       feeRateSatPerVbyte: config.donations.feeRateSatPerVbyte,
-      broadcastRecoveryMs: config.donations.broadcastRecoveryMs
+      broadcastRecoveryMs: config.donations.broadcastRecoveryMs,
+      minimumGraffitiBtc: config.donations.minimumGraffitiBtc
     }
   };
 }
@@ -659,7 +667,7 @@ app.get("/api/faucet/info", (_request, response) => {
   response.json({
     network: payload.network,
     unitLabel: payload.unitLabel,
-    electrum: payload.electrum,
+    electrs: payload.electrs,
     totalBtc: payload.faucet.totalBtc,
     totalActiveBalanceSats: payload.faucet.totalActiveBalanceSats,
     activeWalletCount: payload.faucet.activeWalletCount,
@@ -689,6 +697,8 @@ app.post("/api/donations/heartbeat", (request, response) => {
   const publicKeyHex = String(request.body?.publicKeyHex ?? "").trim();
   const challenge = String(request.body?.challenge ?? "").trim();
   const signatureHex = String(request.body?.signatureHex ?? "").trim();
+  const graffiti =
+    typeof request.body?.graffiti === "string" ? request.body.graffiti : "";
 
   if (!isValidBitcoinAddress(address)) {
     response.status(400).json({ error: "invalid_bitcoin_address" });
@@ -715,7 +725,8 @@ app.post("/api/donations/heartbeat", (request, response) => {
       address,
       publicKeyHex,
       challenge,
-      signatureHex
+      signatureHex,
+      graffiti
     });
 
     response.json({
@@ -758,7 +769,7 @@ app.get("/api/donations/wallet-utxos", async (request, response) => {
     });
   } catch (error) {
     console.error(error);
-    response.status(502).json({ error: "electrum_utxo_lookup_failed" });
+    response.status(502).json({ error: "electrs_utxo_lookup_failed" });
   }
 });
 
@@ -778,7 +789,7 @@ app.get("/api/donations/tx-status", async (request, response) => {
     });
   } catch (error) {
     console.error(error);
-    response.status(502).json({ error: "electrum_transaction_lookup_failed" });
+    response.status(502).json({ error: "electrs_transaction_lookup_failed" });
   }
 });
 
@@ -1303,7 +1314,7 @@ app.get("/api/wallet/balance", async (request, response) => {
     response.json(balance);
   } catch (error) {
     console.error(error);
-    response.status(502).json({ error: "electrum_balance_lookup_failed" });
+    response.status(502).json({ error: "electrs_balance_lookup_failed" });
   }
 });
 

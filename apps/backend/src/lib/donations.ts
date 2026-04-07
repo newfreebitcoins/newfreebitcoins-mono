@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { payments, networks } from "bitcoinjs-lib";
 import { loadConfig } from "../config.js";
-import { getAddressBalance } from "./electrum.js";
+import { parseBtcAmountToSats } from "./bitcoin.js";
+import { getAddressBalance } from "./esplora.js";
 
 interface DonationChallengeState {
   challengeHex: string;
@@ -16,9 +17,13 @@ interface ActiveDonationWallet {
   lastHeartbeatAt: number;
   balanceSats: number;
   unconfirmedBalanceSats: number;
+  graffiti: string;
 }
 
 const config = loadConfig();
+const DONATION_HEARTBEAT_CONTEXT = "new-free-bitcoins-donation-heartbeat";
+const MAX_GRAFFITI_LENGTH = 80;
+const minimumGraffitiSats = parseBtcAmountToSats(config.donations.minimumGraffitiBtc);
 
 let currentChallenge = createChallenge();
 const activeWallets = new Map<string, ActiveDonationWallet>();
@@ -37,8 +42,25 @@ function createChallenge(): DonationChallengeState {
   };
 }
 
-function getChallengeHash(challengeHex: string): Uint8Array {
-  return crypto.createHash("sha256").update(Buffer.from(challengeHex, "hex")).digest();
+function normalizeDonationGraffiti(value: string): string {
+  const normalized = String(value ?? "").trim();
+
+  if ([...normalized].length > MAX_GRAFFITI_LENGTH) {
+    throw new Error("invalid_donation_graffiti");
+  }
+
+  return normalized;
+}
+
+function getHeartbeatMessageHash(challengeHex: string, graffiti: string): Uint8Array {
+  return crypto
+    .createHash("sha256")
+    .update(DONATION_HEARTBEAT_CONTEXT, "utf8")
+    .update("\0", "utf8")
+    .update(challengeHex, "utf8")
+    .update("\0", "utf8")
+    .update(graffiti, "utf8")
+    .digest();
 }
 
 function getAddressFromPublicKey(publicKeyHex: string): string {
@@ -147,7 +169,11 @@ export function getActiveDonationWalletsPage(page: number, pageSize: number) {
       unconfirmedBalanceBtc: (
         wallet.unconfirmedBalanceSats / 100_000_000
       ).toFixed(8),
-      lastHeartbeatAt: wallet.lastHeartbeatAt
+      lastHeartbeatAt: wallet.lastHeartbeatAt,
+      graffiti:
+        wallet.balanceSats >= minimumGraffitiSats && wallet.graffiti
+          ? wallet.graffiti
+          : null
     }));
 
   const totalCount = wallets.length;
@@ -169,8 +195,10 @@ export function verifyDonationHeartbeat(input: {
   publicKeyHex: string;
   challenge: string;
   signatureHex: string;
+  graffiti?: string;
 }) {
   pruneInactiveWallets();
+  const graffiti = normalizeDonationGraffiti(input.graffiti ?? "");
 
   if (input.challenge !== currentChallenge.challengeHex) {
     throw new Error("stale_or_invalid_donation_challenge");
@@ -185,7 +213,7 @@ export function verifyDonationHeartbeat(input: {
   const signature = Buffer.from(input.signatureHex, "hex");
   const isValid = secp256k1.verify(
     signature,
-    getChallengeHash(input.challenge),
+    getHeartbeatMessageHash(input.challenge, graffiti),
     Buffer.from(input.publicKeyHex, "hex"),
     { prehash: false }
   );
@@ -201,7 +229,8 @@ export function verifyDonationHeartbeat(input: {
     publicKeyHex: input.publicKeyHex,
     lastHeartbeatAt: Date.now(),
     balanceSats: existing?.balanceSats ?? 0,
-    unconfirmedBalanceSats: existing?.unconfirmedBalanceSats ?? 0
+    unconfirmedBalanceSats: existing?.unconfirmedBalanceSats ?? 0,
+    graffiti
   });
 
   return getDonationBalanceCache();

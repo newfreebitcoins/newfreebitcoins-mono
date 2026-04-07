@@ -50,13 +50,13 @@ const donationsSchema = z.object({
   executionPollMs: z.number().int().positive().default(15 * 1000),
   reservationWindowMs: z.number().int().positive().default(60 * 1000),
   feeRateSatPerVbyte: z.number().positive().default(2),
-  broadcastRecoveryMs: z.number().int().positive().default(10 * 60 * 1000)
+  broadcastRecoveryMs: z.number().int().positive().default(10 * 60 * 1000),
+  minimumGraffitiBtc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).default("0.00100000")
 });
 
-const electrumServerSchema = z.object({
-  host: z.string().min(1),
-  port: z.number().int().positive(),
-  protocol: z.enum(["tcp", "tls"]).default("tls")
+const electrsServerSchema = z.object({
+  baseUrl: z.string().url(),
+  publicBaseUrl: z.string().url().optional()
 });
 
 const xOAuthSchema = z.object({
@@ -83,9 +83,9 @@ const normalizedConfigSchema = z.object({
     password: "",
     ssl: false
   }),
-  electrum: z.object({
-    mainnet: electrumServerSchema,
-    regtest: electrumServerSchema
+  electrs: z.object({
+    mainnet: electrsServerSchema,
+    regtest: electrsServerSchema
   }),
   explorer: z.object({
     mainnet: z.object({
@@ -109,7 +109,8 @@ const normalizedConfigSchema = z.object({
     executionPollMs: 15 * 1000,
     reservationWindowMs: 60 * 1000,
     feeRateSatPerVbyte: 2,
-    broadcastRecoveryMs: 10 * 60 * 1000
+    broadcastRecoveryMs: 10 * 60 * 1000,
+    minimumGraffitiBtc: "0.00100000"
   }),
   xOAuth: xOAuthSchema
 });
@@ -140,12 +141,17 @@ const legacyConfigSchema = z.object({
   donations_reservation_window_ms: z.number().int().positive().optional(),
   donations_fee_rate_sat_per_vbyte: z.number().positive().optional(),
   donations_broadcast_recovery_ms: z.number().int().positive().optional(),
+  donations_minimum_graffiti_btc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).optional(),
   electrum_mainnet_host: z.string().optional(),
   electrum_mainnet_port: z.number().int().positive().optional(),
   electrum_mainnet_protocol: z.enum(["tcp", "tls"]).optional(),
   electrum_regtest_host: z.string().optional(),
   electrum_regtest_port: z.number().int().positive().optional(),
   electrum_regtest_protocol: z.enum(["tcp", "tls"]).optional(),
+  electrs_mainnet_base_url: z.string().url().optional(),
+  electrs_mainnet_public_base_url: z.string().url().optional(),
+  electrs_regtest_base_url: z.string().url().optional(),
+  electrs_regtest_public_base_url: z.string().url().optional(),
   explorer_mainnet_tx_base_url: z.string().url().optional(),
   explorer_regtest_tx_base_url: z.string().url().optional(),
     database_dialect: z.literal("postgres").optional(),
@@ -187,16 +193,18 @@ function normalizeConfig(parsed: unknown): AppConfig {
       autoSync: legacy.database_auto_sync ?? true,
       alter: legacy.database_alter ?? true
     },
-    electrum: {
+    electrs: {
       mainnet: {
-        host: legacy.electrum_mainnet_host ?? "electrum.blockstream.info",
-        port: legacy.electrum_mainnet_port ?? 50002,
-        protocol: legacy.electrum_mainnet_protocol ?? "tls"
+        baseUrl: legacy.electrs_mainnet_base_url ?? "http://127.0.0.1:4332",
+        publicBaseUrl:
+          legacy.electrs_mainnet_public_base_url ??
+          "https://electrs.newfreebitcoins.com/mainnet"
       },
       regtest: {
-        host: legacy.electrum_regtest_host ?? "127.0.0.1",
-        port: legacy.electrum_regtest_port ?? 50001,
-        protocol: legacy.electrum_regtest_protocol ?? "tcp"
+        baseUrl: legacy.electrs_regtest_base_url ?? "http://127.0.0.1:4335",
+        publicBaseUrl:
+          legacy.electrs_regtest_public_base_url ??
+          "https://electrs.newfreebitcoins.com/regtest"
       }
     },
     explorer: {
@@ -229,7 +237,9 @@ function normalizeConfig(parsed: unknown): AppConfig {
       reservationWindowMs: legacy.donations_reservation_window_ms ?? 60 * 1000,
       feeRateSatPerVbyte: legacy.donations_fee_rate_sat_per_vbyte ?? 2,
       broadcastRecoveryMs:
-        legacy.donations_broadcast_recovery_ms ?? 10 * 60 * 1000
+        legacy.donations_broadcast_recovery_ms ?? 10 * 60 * 1000,
+      minimumGraffitiBtc:
+        legacy.donations_minimum_graffiti_btc ?? "0.00100000"
     },
     xOAuth: {
       apiKey: legacy.x_api_key,

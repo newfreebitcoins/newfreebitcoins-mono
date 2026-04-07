@@ -19,3 +19,16 @@ export function isValidBitcoinAddress(value: string): boolean {
     return false;
   }
 }
+
+export function parseBtcAmountToSats(value: string): number {
+  const trimmed = String(value ?? "").trim();
+
+  if (!/^\d+(?:\.\d{1,8})?$/.test(trimmed)) {
+    throw new Error("invalid_btc_amount");
+  }
+
+  const [wholePart, fractionalPart = ""] = trimmed.split(".");
+  const normalizedFractional = `${fractionalPart}00000000`.slice(0, 8);
+
+  return Number(BigInt(wholePart) * 100_000_000n + BigInt(normalizedFractional));
+}

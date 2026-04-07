@@ -9,8 +9,8 @@ import { wordlist } from "@scure/bip39/wordlists/english.js";
 import * as bitcoin from "bitcoinjs-lib";
 import QRCode from "qrcode";
 import {
-  getAppConfig,
   getDonationChallenge,
+  getRuntimeConfig,
   getTransactionStatus,
   getWalletActivity,
   getWalletBalance,
@@ -29,6 +29,8 @@ import {
 const STORAGE_KEY = "donationWallet";
 const DUST_THRESHOLD = 546;
 const WALLET_AUTO_REFRESH_MS = 10000;
+const GRAFFITI_MAX_LENGTH = 80;
+const DONATION_HEARTBEAT_CONTEXT = "new-free-bitcoins-donation-heartbeat";
 
 window.Buffer ??= Buffer;
 
@@ -258,8 +260,11 @@ function deriveWallet(mnemonic) {
 }
 
 async function getChallengeHashBytes(challengeHex) {
-  const challengeBytes = Uint8Array.from(Buffer.from(challengeHex, "hex"));
-  const digest = await crypto.subtle.digest("SHA-256", challengeBytes);
+  const graffiti = String(getStoredWallet()?.graffiti ?? "").trim();
+  const payload = new TextEncoder().encode(
+    `${DONATION_HEARTBEAT_CONTEXT}\0${challengeHex}\0${graffiti}`
+  );
+  const digest = await crypto.subtle.digest("SHA-256", payload);
   return new Uint8Array(digest);
 }
 
@@ -306,6 +311,17 @@ function getFeeRateSatPerVbyte() {
   return Math.min(Math.max(value || fallback, 1), 500);
 }
 
+function getGraffitiValue() {
+  const input = $("[data-graffiti-input]");
+  const fallback = String(getStoredWallet()?.graffiti ?? "").trim();
+
+  if (!input) {
+    return fallback;
+  }
+
+  return String(input.value ?? fallback).trim();
+}
+
 function setMaxRequestsInputValue(value) {
   const input = $("[data-max-requests-input]");
 
@@ -319,6 +335,14 @@ function setFeeRateInputValue(value) {
 
   if (input) {
     input.value = String(Math.min(Math.max(Number(value) || 2, 1), 500));
+  }
+}
+
+function setGraffitiInputValue(value) {
+  const input = $("[data-graffiti-input]");
+
+  if (input) {
+    input.value = String(value ?? "").trim();
   }
 }
 
@@ -357,6 +381,24 @@ function setFeeRateEditing(isEditing) {
   if (saveButton) {
     saveButton.hidden = !isEditing;
     saveButton.disabled = donationRuntimeState.enabled;
+  }
+}
+
+function setGraffitiEditing(isEditing) {
+  const input = $("[data-graffiti-input]");
+  const editButton = $("[data-edit-graffiti]");
+  const saveButton = $("[data-save-graffiti]");
+
+  if (input) {
+    input.disabled = !isEditing;
+  }
+
+  if (editButton) {
+    editButton.disabled = isEditing;
+  }
+
+  if (saveButton) {
+    saveButton.hidden = !isEditing;
   }
 }
 
@@ -412,6 +454,15 @@ function renderExecutionStatus(text, isRunning = false) {
 
   if (feeRateSaveButton) {
     feeRateSaveButton.disabled = isRunning;
+  }
+}
+
+function updateGraffitiThresholdNote() {
+  const node = $("[data-graffiti-threshold]");
+  const minimumGraffitiBtc = String(appConfig?.donations?.minimumGraffitiBtc ?? "0.00100000");
+
+  if (node) {
+    node.textContent = `${minimumGraffitiBtc} ${getCoinLabel()}`;
   }
 }
 
@@ -778,7 +829,8 @@ async function maybeHeartbeat() {
     address: unlockedWalletState.address,
     publicKeyHex: unlockedWalletState.publicKeyHex,
     challenge,
-    signatureHex
+    signatureHex,
+    graffiti: String(getStoredWallet()?.graffiti ?? "").trim()
   });
 
   if (!heartbeatResult.ok) {
@@ -1150,6 +1202,7 @@ async function saveWalletFromPendingMnemonic() {
     network: appConfig.network,
     maxRequestsPerTx: 1,
     feeRateSatPerVbyte: Number(appConfig?.donations?.feeRateSatPerVbyte ?? 2) || 2,
+    graffiti: "",
     ...encrypted,
     address: wallet.address,
     derivationPath: wallet.derivationPath,
@@ -1190,8 +1243,11 @@ async function renderUnlockedWallet(addressOverride) {
   setFeeRateInputValue(
     storedWallet?.feeRateSatPerVbyte ?? appConfig?.donations?.feeRateSatPerVbyte ?? 2
   );
+  setGraffitiInputValue(storedWallet?.graffiti ?? "");
   setMaxRequestsEditing(false);
   setFeeRateEditing(false);
+  setGraffitiEditing(false);
+  updateGraffitiThresholdNote();
   renderExecutionStatus("Donation wallet is stopped.", false);
 
   await Promise.all([
@@ -1342,7 +1398,7 @@ function applyHashRoute() {
 }
 
 export async function initDonatePage() {
-  const configResult = await getAppConfig();
+  const configResult = await getRuntimeConfig();
 
   if (!configResult.ok) {
     setMessage("Unable to load app configuration.", "error");
@@ -1370,6 +1426,9 @@ export async function initDonatePage() {
   const saveMaxRequestsButton = $("[data-save-max-requests]");
   const editFeeRateButton = $("[data-edit-fee-rate]");
   const saveFeeRateButton = $("[data-save-fee-rate]");
+  const graffitiInput = $("[data-graffiti-input]");
+  const editGraffitiButton = $("[data-edit-graffiti]");
+  const saveGraffitiButton = $("[data-save-graffiti]");
   const activityPrevButton = $("[data-wallet-activity-prev]");
   const activityNextButton = $("[data-wallet-activity-next]");
   const sendButton = $("[data-send-wallet]");
@@ -1389,6 +1448,9 @@ export async function initDonatePage() {
   );
   unlockPasswordInput?.addEventListener("keydown", (event) =>
     handleEnterSubmit(event, "[data-unlock-wallet]")
+  );
+  graffitiInput?.addEventListener("keydown", (event) =>
+    handleEnterSubmit(event, "[data-save-graffiti]")
   );
 
   createButton?.addEventListener("click", () => {
@@ -1480,6 +1542,29 @@ export async function initDonatePage() {
     updateStoredWallet({ feeRateSatPerVbyte });
     setFeeRateInputValue(feeRateSatPerVbyte);
     setFeeRateEditing(false);
+  });
+
+  editGraffitiButton?.addEventListener("click", () => {
+    setGraffitiEditing(true);
+  });
+
+  saveGraffitiButton?.addEventListener("click", () => {
+    const graffiti = getGraffitiValue();
+
+    if ([...graffiti].length > GRAFFITI_MAX_LENGTH) {
+      setMessage(`Graffiti must be ${GRAFFITI_MAX_LENGTH} characters or fewer.`, "error");
+      return;
+    }
+
+    updateStoredWallet({ graffiti });
+    setGraffitiInputValue(graffiti);
+    setGraffitiEditing(false);
+
+    if (donationRuntimeState.enabled) {
+      donationRuntimeState.lastHeartbeatAt = 0;
+    }
+
+    setMessage("", "");
   });
 
   activityPrevButton?.addEventListener("click", () => {

@@ -10,7 +10,6 @@
   "dependencies": {
     "@noble/curves": "^2.0.1",
     "bitcoinjs-lib": "^6.1.7",
-    "electrum-client": "^0.0.6",
     "express": "^4.21.2",
     "pg": "^8.14.1",
     "sequelize": "^6.37.7",

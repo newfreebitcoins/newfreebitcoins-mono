@@ -5,13 +5,11 @@ export const BACKEND_ENDPOINT = CLIENT_CONFIG.backendEndpoint;
 export const NETWORK_CONFIG = {
   mainnet: {
     label: "Mainnet",
-    bip84CoinType: 0,
-    electrum: CLIENT_CONFIG.electrum.mainnet
+    bip84CoinType: 0
   },
   regtest: {
     label: "Regtest",
-    bip84CoinType: 1,
-    electrum: CLIENT_CONFIG.electrum.regtest
+    bip84CoinType: 1
   }
 };
 
