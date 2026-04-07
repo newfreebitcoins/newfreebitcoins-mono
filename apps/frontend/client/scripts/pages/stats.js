@@ -69,11 +69,21 @@ function renderRows(wallets) {
     addressWrap.className = "wallet-address";
     activeDot.className = "active-dot";
     activeDot.setAttribute("aria-hidden", "true");
-    addressText.textContent = wallet.graffiti
-      ? `${wallet.address} (${wallet.graffiti})`
-      : wallet.address;
 
-    addressWrap.append(activeDot, addressText);
+    if (wallet.graffiti) {
+      const graffitiText = document.createElement("span");
+      const separatorText = document.createElement("span");
+
+      graffitiText.className = "wallet-graffiti";
+      graffitiText.textContent = wallet.graffiti;
+      separatorText.textContent = " ";
+      addressText.textContent = wallet.address;
+      addressWrap.append(activeDot, graffitiText, separatorText, addressText);
+    } else {
+      addressText.textContent = wallet.address;
+      addressWrap.append(activeDot, addressText);
+    }
+
     addressCell.append(addressWrap);
     balanceCell.textContent = formatCoinAmount(wallet.balanceBtc);
     lastSeenCell.textContent = new Date(wallet.lastHeartbeatAt).toLocaleString();

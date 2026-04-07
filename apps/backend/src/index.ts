@@ -375,26 +375,34 @@ async function backfillFaucetRequestExpiry() {
 }
 
 async function reconcileBroadcastRequests() {
-  const broadcastRequests = getCachedFaucetRequestsByFilter(
-    activeNetwork,
-    (row) => row.status === "broadcast" && row.fulfillmentTxId != null
-  ).sort((left, right) => left.updatedAt.valueOf() - right.updatedAt.valueOf());
+  const broadcastRequests = await models.FaucetRequest.findAll({
+    where: {
+      network: activeNetwork,
+      status: "broadcast",
+      fulfillmentTxId: {
+        [Op.ne]: null
+      }
+    },
+    order: [["updatedAt", "ASC"]]
+  });
 
-  const byTxId = new Map<string, number[]>();
+  const byTxId = new Map<string, InstanceType<typeof models.FaucetRequest>[]>();
 
   for (const request of broadcastRequests) {
     if (!request.fulfillmentTxId) {
       continue;
     }
 
+    syncCachedFaucetRequest(request);
     const existing = byTxId.get(request.fulfillmentTxId) ?? [];
-    existing.push(request.id);
+    existing.push(request);
     byTxId.set(request.fulfillmentTxId, existing);
   }
 
-  for (const [txid, requestIds] of byTxId.entries()) {
+  for (const [txid, requests] of byTxId.entries()) {
     try {
       const txStatus = await getTransactionStatus(txid);
+      const requestIds = requests.map((request) => request.id);
 
       if (!txStatus.confirmed) {
         const staleCutoff = new Date(
@@ -423,32 +431,48 @@ async function reconcileBroadcastRequests() {
             }
           }
         );
-        for (const requestId of requestIds) {
-          const cached = getCachedFaucetRequest(requestId);
-          if (!cached) {
+
+        for (const request of requests) {
+          if (request.updatedAt >= staleCutoff) {
+            syncCachedFaucetRequest(request);
             continue;
           }
+
           upsertCachedFaucetRequest({
-            ...cached,
+            id: request.id,
+            network: request.network,
+            xUserId: request.xUserId,
+            xUsername: request.xUsername,
+            xName: request.xName,
+            xCreatedAt: request.xCreatedAt,
+            xVerified: request.xVerified,
+            bitcoinAddress: request.bitcoinAddress,
+            amountSats: Number(request.amountSats ?? 0),
             status: "pending",
+            expiresAt: request.expiresAt,
+            refreshSecretHash: request.refreshSecretHash,
+            reservedByAddress: null,
+            reservationExpiresAt: null,
             fulfillmentTxId: null,
             paidByAddress: null,
             paidAt: null,
-            reservedByAddress: null,
-            reservationExpiresAt: null,
+            rejectionReason: request.rejectionReason,
+            createdAt: request.createdAt,
             updatedAt: new Date()
           });
         }
         continue;
       }
 
+      const paidAt =
+        txStatus.blocktime != null
+          ? new Date(txStatus.blocktime * 1000)
+          : new Date();
+
       await models.FaucetRequest.update(
         {
           status: "paid",
-          paidAt:
-            txStatus.blocktime != null
-              ? new Date(txStatus.blocktime * 1000)
-              : new Date()
+          paidAt
         },
         {
           where: {
@@ -460,18 +484,28 @@ async function reconcileBroadcastRequests() {
           }
         }
       );
-      for (const requestId of requestIds) {
-        const cached = getCachedFaucetRequest(requestId);
-        if (!cached) {
-          continue;
-        }
+
+      for (const request of requests) {
         upsertCachedFaucetRequest({
-          ...cached,
+          id: request.id,
+          network: request.network,
+          xUserId: request.xUserId,
+          xUsername: request.xUsername,
+          xName: request.xName,
+          xCreatedAt: request.xCreatedAt,
+          xVerified: request.xVerified,
+          bitcoinAddress: request.bitcoinAddress,
+          amountSats: Number(request.amountSats ?? 0),
           status: "paid",
-          paidAt:
-            txStatus.blocktime != null
-              ? new Date(txStatus.blocktime * 1000)
-              : new Date(),
+          expiresAt: request.expiresAt,
+          refreshSecretHash: request.refreshSecretHash,
+          reservedByAddress: request.reservedByAddress,
+          reservationExpiresAt: request.reservationExpiresAt,
+          fulfillmentTxId: request.fulfillmentTxId,
+          paidByAddress: request.paidByAddress,
+          paidAt,
+          rejectionReason: request.rejectionReason,
+          createdAt: request.createdAt,
           updatedAt: new Date()
         });
       }
