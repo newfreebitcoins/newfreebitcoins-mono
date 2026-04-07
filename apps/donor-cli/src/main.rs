@@ -42,6 +42,7 @@ const GRAFFITI_MAX_LENGTH: usize = 80;
 const DONATION_HEARTBEAT_CONTEXT: &str = "new-free-bitcoins-donation-heartbeat";
 const START_LOOP_DELAY: Duration = Duration::from_secs(60);
 const DEFAULT_EXECUTION_POLL_MS: u64 = 15_000;
+const MIN_FEE_RATE_SAT_PER_VBYTE: f64 = 0.00000001;
 
 #[derive(Parser)]
 #[command(name = "donor-cli")]
@@ -91,7 +92,7 @@ struct StoredWallet {
     #[serde(default = "default_max_requests_per_tx")]
     max_requests_per_tx: usize,
     #[serde(default = "default_fee_rate_sat_per_vbyte")]
-    fee_rate_sat_per_vbyte: u64,
+    fee_rate_sat_per_vbyte: f64,
     #[serde(default)]
     graffiti: String,
 }
@@ -296,8 +297,8 @@ fn default_max_requests_per_tx() -> usize {
     1
 }
 
-fn default_fee_rate_sat_per_vbyte() -> u64 {
-    2
+fn default_fee_rate_sat_per_vbyte() -> f64 {
+    2.0
 }
 
 fn default_execution_poll_ms() -> u64 {
@@ -498,16 +499,29 @@ fn prompt_usize_with_default(prompt: &str, default: usize, min: usize, max: usiz
     Ok(value.clamp(min, max))
 }
 
-fn prompt_u64_with_default(prompt: &str, default: u64, min: u64, max: u64) -> Result<u64> {
-    let answer = prompt_line(&format!("{prompt} [{default}]: "))?;
+fn format_fee_rate_sat_per_vbyte(value: f64) -> String {
+    let rounded = (value * 100_000_000.0).round() / 100_000_000.0;
+    rounded.to_string()
+}
+
+fn prompt_f64_with_default(prompt: &str, default: f64, min: f64, max: f64) -> Result<f64> {
+    let answer = prompt_line(&format!(
+        "{prompt} [{}]: ",
+        format_fee_rate_sat_per_vbyte(default)
+    ))?;
     if answer.trim().is_empty() {
         return Ok(default);
     }
 
     let value = answer
         .trim()
-        .parse::<u64>()
-        .context("Please enter a valid whole number.")?;
+        .parse::<f64>()
+        .context("Please enter a valid number.")?;
+
+    if !value.is_finite() {
+        bail!("Please enter a valid number.");
+    }
+
     Ok(value.clamp(min, max))
 }
 
@@ -757,7 +771,7 @@ fn load_or_create_wallet(
     Ok(DecryptedWallet { mnemonic, address, network: backend_network })
 }
 
-fn load_wallet_settings(data_dir: Option<&PathBuf>, backend_network: Network) -> Result<(usize, u64, String)> {
+fn load_wallet_settings(data_dir: Option<&PathBuf>, backend_network: Network) -> Result<(usize, f64, String)> {
     let stored = load_stored_wallet(data_dir, backend_network)?;
     Ok((
         stored.max_requests_per_tx,
@@ -777,7 +791,7 @@ fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Resul
     println!();
     print_section("Current Settings");
     print_kv("Max Requests", &stored.max_requests_per_tx.to_string());
-    print_kv("Sats/vbyte", &stored.fee_rate_sat_per_vbyte.to_string());
+    print_kv("Sats/vbyte", &format_fee_rate_sat_per_vbyte(stored.fee_rate_sat_per_vbyte));
     print_kv(
         "Graffiti",
         if stored.graffiti.is_empty() {
@@ -794,11 +808,11 @@ fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Resul
         1,
         25
     )?;
-    stored.fee_rate_sat_per_vbyte = prompt_u64_with_default(
+    stored.fee_rate_sat_per_vbyte = prompt_f64_with_default(
         "Fee rate (sats/vbyte)",
         stored.fee_rate_sat_per_vbyte,
-        1,
-        500
+        MIN_FEE_RATE_SAT_PER_VBYTE,
+        500.0
     )?;
     stored.graffiti = normalize_graffiti(&prompt_string_with_default(
         "Graffiti",
@@ -808,7 +822,7 @@ fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Resul
     println!();
     print_success("Wallet settings saved.");
     print_kv("Max Requests", &stored.max_requests_per_tx.to_string());
-    print_kv("Sats/vbyte", &stored.fee_rate_sat_per_vbyte.to_string());
+    print_kv("Sats/vbyte", &format_fee_rate_sat_per_vbyte(stored.fee_rate_sat_per_vbyte));
     print_kv(
         "Graffiti",
         if stored.graffiti.is_empty() {
@@ -861,7 +875,7 @@ fn build_tx(
     wallet: &DecryptedWallet,
     utxos: &[Utxo],
     outputs: &[(Address, u64)],
-    fee_rate_sat_per_vbyte: u64,
+    fee_rate_sat_per_vbyte: f64,
 ) -> Result<String> {
     let secp = Secp256k1::new();
     let (_addr, _path, private_key, public_key) =
@@ -972,12 +986,12 @@ fn build_tx(
     Ok(bitcoin::consensus::encode::serialize_hex(&transaction))
 }
 
-fn estimate_fee(input_count: u64, output_count: u64, fee_rate_sat_per_vbyte: u64) -> u64 {
+fn estimate_fee(input_count: u64, output_count: u64, fee_rate_sat_per_vbyte: f64) -> u64 {
     let virtual_bytes = 11 + input_count * 68 + output_count * 31;
-    virtual_bytes * fee_rate_sat_per_vbyte
+    ((virtual_bytes as f64) * fee_rate_sat_per_vbyte).ceil() as u64
 }
 
-fn calculate_max_send_sats(utxos: &[Utxo], fee_rate_sat_per_vbyte: u64) -> Result<u64> {
+fn calculate_max_send_sats(utxos: &[Utxo], fee_rate_sat_per_vbyte: f64) -> Result<u64> {
     let confirmed_utxos = utxos
         .iter()
         .filter(|utxo| utxo.height > 0)
@@ -1015,7 +1029,7 @@ async fn run_start_loop(
     config: &ConfigResponse,
     wallet: &DecryptedWallet,
     max_requests: usize,
-    fee_rate_sat_per_vbyte: u64,
+    fee_rate_sat_per_vbyte: f64,
     graffiti: &str,
 ) -> Result<()> {
     let secp = Secp256k1::new();
@@ -1220,7 +1234,10 @@ async fn main() -> Result<()> {
             print_section("Donation Loop");
             print_kv("Mode", "Running");
             print_kv("Max Requests", &max_requests.to_string());
-            print_kv("Sats/vbyte", &configured_fee_rate_sat_per_vbyte.to_string());
+            print_kv(
+                "Sats/vbyte",
+                &format_fee_rate_sat_per_vbyte(configured_fee_rate_sat_per_vbyte),
+            );
             print_kv(
                 "Graffiti",
                 if graffiti.is_empty() {

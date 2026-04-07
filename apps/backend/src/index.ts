@@ -180,6 +180,37 @@ async function validateTransactionInputsOwnedByAddress(
   }
 }
 
+async function getTransactionFeeRateSatPerVbyte(
+  transaction: BitcoinTransaction
+) {
+  let totalInputSats = 0;
+  let totalOutputSats = 0;
+
+  for (const input of transaction.ins) {
+    const previousTxId = Buffer.from(input.hash).reverse().toString("hex");
+    const previousOutput = await getPreviousOutput(previousTxId, input.index);
+    totalInputSats += Number(previousOutput.value ?? 0);
+  }
+
+  for (const output of transaction.outs) {
+    totalOutputSats += Number(output.value ?? 0);
+  }
+
+  const feeSats = totalInputSats - totalOutputSats;
+
+  if (feeSats < 0) {
+    throw new Error("transaction_fee_negative");
+  }
+
+  const virtualSize = transaction.virtualSize();
+
+  if (!Number.isFinite(virtualSize) || virtualSize <= 0) {
+    throw new Error("transaction_virtual_size_invalid");
+  }
+
+  return feeSats / virtualSize;
+}
+
 function getConfigPayload() {
   const donationBalance = getDonationBalanceCache();
 
@@ -210,6 +241,7 @@ function getConfigPayload() {
       executionPollMs: config.donations.executionPollMs,
       reservationWindowMs: config.donations.reservationWindowMs,
       feeRateSatPerVbyte: config.donations.feeRateSatPerVbyte,
+      minAcceptedSatsVByte: config.donations.minAcceptedSatsVByte,
       broadcastRecoveryMs: config.donations.broadcastRecoveryMs,
       minimumGraffitiBtc: config.donations.minimumGraffitiBtc
     }
@@ -848,6 +880,13 @@ app.post("/api/donations/send-transaction", async (request, response) => {
   try {
     const transaction = BitcoinTransaction.fromHex(rawTransactionHex);
     await validateTransactionInputsOwnedByAddress(transaction, donorAddress);
+    const feeRateSatPerVbyte = await getTransactionFeeRateSatPerVbyte(transaction);
+
+    if (feeRateSatPerVbyte < config.donations.minAcceptedSatsVByte) {
+      response.status(400).json({ error: "transaction_fee_rate_below_minimum" });
+      return;
+    }
+
     const txid = await broadcastTransaction(rawTransactionHex);
 
     response.json({
@@ -990,6 +1029,37 @@ app.post("/api/donations/submit-fulfillment", async (request, response) => {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "transaction_input_not_owned_by_donor";
+    response.status(400).json({ error: message });
+    return;
+  }
+
+  try {
+    const feeRateSatPerVbyte = await getTransactionFeeRateSatPerVbyte(transaction);
+
+    if (feeRateSatPerVbyte < config.donations.minAcceptedSatsVByte) {
+      await models.FaucetRequest.update(
+        {
+          reservedByAddress: null,
+          reservationExpiresAt: null
+        },
+        {
+          where: {
+            id: {
+              [Op.in]: requestIds
+            },
+            network: activeNetwork,
+            status: "pending",
+            reservedByAddress: donorAddress
+          }
+        }
+      );
+
+      response.status(400).json({ error: "transaction_fee_rate_below_minimum" });
+      return;
+    }
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "transaction_fee_rate_invalid";
     response.status(400).json({ error: message });
     return;
   }

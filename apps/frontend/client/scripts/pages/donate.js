@@ -33,6 +33,7 @@ const WALLET_AUTO_REFRESH_MS = 10000;
 const SEND_REFETCH_DELAY_MS = 1500;
 const GRAFFITI_MAX_LENGTH = 80;
 const DONATION_HEARTBEAT_CONTEXT = "new-free-bitcoins-donation-heartbeat";
+const MAX_FEE_RATE_SAT_PER_VBYTE = 500;
 
 window.Buffer ??= Buffer;
 
@@ -379,6 +380,42 @@ function parseBtcAmountToSats(value) {
   return Number(BigInt(wholePart) * 100000000n + BigInt(normalizedFractional));
 }
 
+function parseFeeRateSatPerVbyte(value) {
+  const trimmed = String(value ?? "").trim();
+
+  if (!/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    return null;
+  }
+
+  const parsed = Number(trimmed);
+
+  if (
+    !Number.isFinite(parsed) ||
+    parsed <= 0 ||
+    parsed > MAX_FEE_RATE_SAT_PER_VBYTE
+  ) {
+    return null;
+  }
+
+  return parsed;
+}
+
+function getDefaultFeeRateSatPerVbyte() {
+  const configured = Number(
+    getStoredWallet()?.feeRateSatPerVbyte ?? appConfig?.donations?.feeRateSatPerVbyte ?? 2
+  );
+
+  if (
+    Number.isFinite(configured) &&
+    configured > 0 &&
+    configured <= MAX_FEE_RATE_SAT_PER_VBYTE
+  ) {
+    return configured;
+  }
+
+  return 2;
+}
+
 function getMaxRequestsPerTx() {
   const input = $("[data-max-requests-input]");
   const storedWallet = getStoredWallet();
@@ -394,35 +431,18 @@ function getMaxRequestsPerTx() {
 
 function getFeeRateSatPerVbyte() {
   const input = $("[data-fee-rate-input]");
-  const storedWallet = getStoredWallet();
-  const fallback =
-    Number(
-      storedWallet?.feeRateSatPerVbyte ?? appConfig?.donations?.feeRateSatPerVbyte ?? 2
-    ) || 2;
+  const fallback = getDefaultFeeRateSatPerVbyte();
 
   if (!input) {
     return fallback;
   }
 
-  const value = Number(input.value ?? fallback);
-  return Math.min(Math.max(value || fallback, 1), 500);
+  return parseFeeRateSatPerVbyte(input.value) ?? fallback;
 }
 
 function getValidatedFeeRateSatPerVbyte() {
   const input = $("[data-fee-rate-input]");
-  const value = String(input?.value ?? "").trim();
-
-  if (!/^\d+$/.test(value)) {
-    return null;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 500) {
-    return null;
-  }
-
-  return parsed;
+  return parseFeeRateSatPerVbyte(input?.value ?? "");
 }
 
 function getSendAmountSats() {
@@ -453,7 +473,7 @@ function setFeeRateInputValue(value) {
   const input = $("[data-fee-rate-input]");
 
   if (input) {
-    input.value = String(Math.min(Math.max(Number(value) || 2, 1), 500));
+    input.value = String(parseFeeRateSatPerVbyte(value) ?? getDefaultFeeRateSatPerVbyte());
   }
 }
 

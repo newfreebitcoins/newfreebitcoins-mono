@@ -51,6 +51,7 @@ const donationsSchema = z.object({
   executionPollMs: z.number().int().positive().default(15 * 1000),
   reservationWindowMs: z.number().int().positive().default(60 * 1000),
   feeRateSatPerVbyte: z.number().positive().default(2),
+  minAcceptedSatsVByte: z.number().positive().default(2),
   broadcastRecoveryMs: z.number().int().positive().default(10 * 60 * 1000),
   minimumGraffitiBtc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).default("0.00100000")
 });
@@ -110,6 +111,7 @@ const normalizedConfigSchema = z.object({
     executionPollMs: 15 * 1000,
     reservationWindowMs: 60 * 1000,
     feeRateSatPerVbyte: 2,
+    minAcceptedSatsVByte: 2,
     broadcastRecoveryMs: 10 * 60 * 1000,
     minimumGraffitiBtc: "0.00100000"
   }),
@@ -142,6 +144,7 @@ const legacyConfigSchema = z.object({
   donations_execution_poll_ms: z.number().int().positive().optional(),
   donations_reservation_window_ms: z.number().int().positive().optional(),
   donations_fee_rate_sat_per_vbyte: z.number().positive().optional(),
+  donations_min_accepted_sats_vbyte: z.number().positive().optional(),
   donations_broadcast_recovery_ms: z.number().int().positive().optional(),
   donations_minimum_graffiti_btc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).optional(),
   electrum_mainnet_host: z.string().optional(),
@@ -240,6 +243,7 @@ function normalizeConfig(parsed: unknown): AppConfig {
       executionPollMs: legacy.donations_execution_poll_ms ?? 15 * 1000,
       reservationWindowMs: legacy.donations_reservation_window_ms ?? 60 * 1000,
       feeRateSatPerVbyte: legacy.donations_fee_rate_sat_per_vbyte ?? 2,
+      minAcceptedSatsVByte: legacy.donations_min_accepted_sats_vbyte ?? 2,
       broadcastRecoveryMs:
         legacy.donations_broadcast_recovery_ms ?? 10 * 60 * 1000,
       minimumGraffitiBtc:
