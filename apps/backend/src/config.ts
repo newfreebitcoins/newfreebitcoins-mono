@@ -39,7 +39,8 @@ const faucetSchema = z.object({
   minimumAccountAgeYears: z.number().nonnegative().default(2),
   requireVerified: z.boolean().default(true),
   requestRefreshTimeoutMs: z.number().int().positive().default(60 * 60 * 1000),
-  multiplePerAccount: z.boolean().default(false)
+  multiplePerAccount: z.boolean().default(false),
+  allowRepeatPerAccount: z.boolean().default(false)
 });
 
 const donationsSchema = z.object({
@@ -133,6 +134,7 @@ const legacyConfigSchema = z.object({
   faucet_require_verified: z.boolean().optional(),
   faucet_request_refresh_timeout_ms: z.number().int().positive().optional(),
   faucet_multiple_per_account: z.boolean().optional(),
+  faucet_allow_repeat_per_account: z.boolean().optional(),
   donations_challenge_rotation_ms: z.number().int().positive().optional(),
   donations_heartbeat_poll_ms: z.number().int().positive().optional(),
   donations_active_window_ms: z.number().int().positive().optional(),
@@ -226,7 +228,9 @@ function normalizeConfig(parsed: unknown): AppConfig {
       requireVerified: legacy.faucet_require_verified ?? true,
       requestRefreshTimeoutMs:
         legacy.faucet_request_refresh_timeout_ms ?? 60 * 60 * 1000,
-      multiplePerAccount: legacy.faucet_multiple_per_account ?? false
+      multiplePerAccount: legacy.faucet_multiple_per_account ?? false,
+      allowRepeatPerAccount:
+        legacy.faucet_allow_repeat_per_account ?? false
     },
     donations: {
       challengeRotationMs: legacy.donations_challenge_rotation_ms ?? 10 * 60 * 1000,

@@ -40,6 +40,7 @@ import {
   getCachedFaucetRequest,
   getCachedFaucetRequestsByFilter,
   hydrateFaucetRequestCache,
+  removeCachedFaucetRequest,
   upsertCachedFaucetRequest
 } from "./lib/faucetRequestCache.js";
 
@@ -209,7 +210,8 @@ function getConfigPayload() {
       minimumAccountAgeYears: config.faucet.minimumAccountAgeYears,
       requireVerified: config.faucet.requireVerified,
       requestRefreshTimeoutMs: config.faucet.requestRefreshTimeoutMs,
-      multiplePerAccount: config.faucet.multiplePerAccount
+      multiplePerAccount: config.faucet.multiplePerAccount,
+      allowRepeatPerAccount: config.faucet.allowRepeatPerAccount
     },
     donations: {
       challengeRotationMs: config.donations.challengeRotationMs,
@@ -676,7 +678,8 @@ app.get("/api/faucet/info", (_request, response) => {
     minimumAccountAgeYears: payload.faucet.minimumAccountAgeYears,
     requireVerified: payload.faucet.requireVerified,
     requestRefreshTimeoutMs: payload.faucet.requestRefreshTimeoutMs,
-    multiplePerAccount: payload.faucet.multiplePerAccount
+    multiplePerAccount: payload.faucet.multiplePerAccount,
+    allowRepeatPerAccount: payload.faucet.allowRepeatPerAccount
   });
 });
 
@@ -1301,6 +1304,49 @@ app.post("/api/faucet/request/:requestId/refresh", async (request, response) => 
   });
 });
 
+app.post("/api/faucet/request/:requestId/cancel", async (request, response) => {
+  const requestId = Number(request.params.requestId);
+  const refreshToken = String(request.body?.refreshToken ?? "").trim();
+
+  if (!Number.isInteger(requestId) || requestId <= 0) {
+    response.status(400).json({ error: "invalid_request_id" });
+    return;
+  }
+
+  const faucetRequest = await models.FaucetRequest.findOne({
+    where: {
+      id: requestId,
+      network: activeNetwork
+    }
+  });
+
+  if (!faucetRequest) {
+    response.status(404).json({ error: "request_not_found" });
+    return;
+  }
+
+  if (!isRefreshSecretValid(faucetRequest, refreshToken)) {
+    response.status(403).json({ error: "invalid_request_refresh_token" });
+    return;
+  }
+
+  if (
+    faucetRequest.status !== "pending" &&
+    faucetRequest.status !== "expired" &&
+    faucetRequest.status !== "rejected"
+  ) {
+    response.status(409).json({ error: "request_not_cancellable" });
+    return;
+  }
+
+  await faucetRequest.destroy();
+  removeCachedFaucetRequest(requestId);
+
+  response.json({
+    ok: true
+  });
+});
+
 app.get("/api/wallet/balance", async (request, response) => {
   const address = String(request.query.address ?? "").trim();
 
@@ -1441,22 +1487,22 @@ app.get("/api/x_oauth2_callback", async (request, response) => {
         }
       );
 
-      const existingRequest = await models.FaucetRequest.findOne({
-        where: config.faucet.multiplePerAccount
-          ? {
-              network: activeNetwork,
-              xUserId: xUser.id,
-              status: {
-                [Op.in]: ["pending", "broadcast", "expired"]
-              }
-            }
-          : {
-              network: activeNetwork,
-              xUserId: xUser.id
-            },
-        order: [["createdAt", "DESC"]],
-        transaction
-      });
+      const existingRequest = config.faucet.multiplePerAccount
+        ? null
+        : await models.FaucetRequest.findOne({
+            where: config.faucet.allowRepeatPerAccount
+              ? {
+                  network: activeNetwork,
+                  xUserId: xUser.id,
+                  status: "pending"
+                }
+              : {
+                  network: activeNetwork,
+                  xUserId: xUser.id
+                },
+            order: [["createdAt", "DESC"]],
+            transaction
+          });
 
       if (existingRequest) {
         throw new Error("request_already_pending");

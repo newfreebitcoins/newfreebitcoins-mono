@@ -1,4 +1,5 @@
 import {
+  cancelFaucetRequest,
   getFaucetInfo,
   getFaucetRequestById,
   refreshFaucetRequest,
@@ -23,6 +24,7 @@ const ERROR_MESSAGES = {
   invalid_request_id: "That faucet request ID is invalid.",
   request_not_found: "That faucet request could not be found.",
   request_not_refreshable: "That faucet request can no longer be refreshed.",
+  request_not_cancellable: "That faucet request can no longer be cleared from the queue.",
   invalid_request_refresh_token:
     "This browser is not authorized to refresh that faucet request.",
   x_account_too_new:
@@ -105,15 +107,16 @@ function clearSavedRefreshToken() {
 }
 
 function syncSavedRequestControls() {
+  const hasSavedRequest = Boolean(getSavedRequestId());
   const note = document.querySelector("[data-request-saved-note]");
   const resetButton = document.querySelector("[data-reset-request]");
 
   if (note) {
-    note.hidden = !allowMultipleRequestsPerAccount;
+    note.hidden = !hasSavedRequest;
   }
 
   if (resetButton) {
-    resetButton.hidden = !allowMultipleRequestsPerAccount;
+    resetButton.hidden = !hasSavedRequest;
   }
 }
 
@@ -159,11 +162,10 @@ function formatStatus(status) {
 
 function formatCountdown(msRemaining) {
   const totalSeconds = Math.max(Math.floor(msRemaining / 1000), 0);
-  const minutes = Math.floor(totalSeconds / 60)
-    .toString()
-    .padStart(2, "0");
-  const seconds = (totalSeconds % 60).toString().padStart(2, "0");
-  return `${minutes}:${seconds}`;
+  const hours = Math.floor(totalSeconds / 3600);
+  const remainingMinutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${hours}hrs ${remainingMinutes}mins ${seconds}secs`;
 }
 
 function updateRefreshUi(expiresAtValue) {
@@ -326,6 +328,18 @@ function setClaimButtonText(label) {
   }
 }
 
+function formatSatsLabel(amountSats) {
+  const numericAmount = Number(amountSats);
+
+  if (!Number.isFinite(numericAmount)) {
+    return "";
+  }
+
+  return `${numericAmount.toLocaleString()} ${
+    numericAmount === 1 ? "satoshi" : "satoshis"
+  }`;
+}
+
 function isLikelyBitcoinAddress(value) {
   return isLikelyAddressForNetwork(
     value,
@@ -364,6 +378,7 @@ async function loadSavedRequest(statusMessage = "") {
   if (!result.ok) {
     clearSavedRequestId();
     clearSavedRefreshToken();
+    syncSavedRequestControls();
     updateFormMessage(
       ERROR_MESSAGES[result.error] ??
         "The saved faucet request could not be loaded.",
@@ -394,13 +409,14 @@ function startRequestAutoRefresh() {
         result.error === "request_not_found" ||
         result.error === "invalid_request_id"
       ) {
-        clearSavedRequestId();
-        clearSavedRefreshToken();
-        clearRefreshCountdown();
-        clearRequestAutoRefresh();
-        updateFormMessage(
-          ERROR_MESSAGES[result.error] ??
-            "The saved faucet request could not be loaded.",
+      clearSavedRequestId();
+      clearSavedRefreshToken();
+      clearRefreshCountdown();
+      clearRequestAutoRefresh();
+      syncSavedRequestControls();
+      updateFormMessage(
+        ERROR_MESSAGES[result.error] ??
+          "The saved faucet request could not be loaded.",
           "error"
         );
         showSection("form");
@@ -425,16 +441,30 @@ export async function initFaucetRequestPage() {
   const faucetInfoResult = await getFaucetInfo();
 
   if (faucetInfoResult.ok) {
-    const amountBtc = faucetInfoResult.data?.requestAmountBtc ?? "0.00002500";
-    const amountSats = faucetInfoResult.data?.requestAmountSats ?? 2500;
+    const amountBtc =
+      faucetInfoResult.data?.requestAmountBtc ??
+      getRuntimeAppConfig()?.faucet?.requestAmountBtc ??
+      "0.00002500";
+    const amountSats =
+      faucetInfoResult.data?.requestAmountSats ??
+      getRuntimeAppConfig()?.faucet?.requestAmountSats ??
+      2500;
     const minimumAccountAgeYears =
       faucetInfoResult.data?.minimumAccountAgeYears ?? 1;
     allowMultipleRequestsPerAccount =
       faucetInfoResult.data?.multiplePerAccount === true;
 
-    setFinalizeCopy(amountBtc, minimumAccountAgeYears);
+    if (amountBtc != null) {
+      setFinalizeCopy(amountBtc, minimumAccountAgeYears);
+    }
+
+    const satsLabel = formatSatsLabel(amountSats);
     setClaimButtonText(
-      `Send ${formatCoinAmount(amountBtc)} (${amountSats.toLocaleString()} satoshi)`
+      amountBtc != null && satsLabel
+        ? `Send ${formatCoinAmount(amountBtc)} (${satsLabel})`
+        : amountBtc != null
+          ? `Send ${formatCoinAmount(amountBtc)}`
+          : "Send 0.00002500 BTC (2,500 satoshis)"
     );
   }
 
@@ -474,12 +504,13 @@ export async function initFaucetRequestPage() {
 
     if (!result.ok || !result.data) {
       if (result.error === "request_not_found") {
-        clearSavedRequestId();
-        clearSavedRefreshToken();
-        clearRefreshCountdown();
-        clearRequestAutoRefresh();
-        showSection("form");
-        return;
+      clearSavedRequestId();
+      clearSavedRefreshToken();
+      clearRefreshCountdown();
+      clearRequestAutoRefresh();
+      syncSavedRequestControls();
+      showSection("form");
+      return;
       }
 
       await loadSavedRequest();
@@ -498,15 +529,42 @@ export async function initFaucetRequestPage() {
   });
 
   resetButton?.addEventListener("click", () => {
-    clearRefreshCountdown();
-    clearRequestAutoRefresh();
-    clearSavedRequestId();
-    clearSavedRefreshToken();
-    updateFormMessage("", "");
-    if (finalizeBlock) {
-      finalizeBlock.hidden = true;
-    }
-    showSection("form");
+    void (async () => {
+      const requestId = getSavedRequestId();
+      const refreshToken = getSavedRefreshToken();
+
+      resetButton.disabled = true;
+
+      if (requestId && refreshToken) {
+        const result = await cancelFaucetRequest(requestId, refreshToken);
+
+        if (
+          !result.ok &&
+          result.error !== "request_not_found" &&
+          result.error !== "request_not_cancellable"
+        ) {
+          resetButton.disabled = false;
+          updateFormMessage(
+            ERROR_MESSAGES[result.error] ??
+              "The saved faucet request could not be cleared.",
+            "error"
+          );
+          return;
+        }
+      }
+
+      clearRefreshCountdown();
+      clearRequestAutoRefresh();
+      clearSavedRequestId();
+      clearSavedRefreshToken();
+      syncSavedRequestControls();
+      updateFormMessage("", "");
+      if (finalizeBlock) {
+        finalizeBlock.hidden = true;
+      }
+      showSection("form");
+      resetButton.disabled = false;
+    })();
   });
 
   revealButton?.addEventListener("click", () => {

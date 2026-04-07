@@ -42,6 +42,7 @@
       .wallet-box canvas { display: block; margin: 0 0 12px; background: white; }
       .wallet-controls, .activity-box { margin-top: 14px; padding: 12px; border: 1px dotted silver; background: #fcfcfc; }
       .status-line, .max-requests-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .wallet-controls .max-requests-row + .max-requests-row { margin-top: 5px; }
       .status-dot { width: 10px; height: 10px; border-radius: 999px; background: #2d9a44; display: inline-block; }
       .status-dot[hidden] { display: none; }
       .max-requests-row label { display: inline-flex; align-items: center; margin: 0; }
@@ -49,11 +50,17 @@
       .max-requests-row input { width: 70px; margin: 0; }
       .max-requests-row button { margin-top: 0; }
       .send-box { margin-top: 14px; padding: 12px; border: 1px dotted silver; background: #fcfcfc; }
+      .send-box .send-amount-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .send-box .send-amount-row input { flex: 1 1 180px; margin: 0; }
+      .send-box .send-amount-row button { margin-top: 0; height: 31px; }
       .send-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+      .send-actions .request-success a { color: #4c7a34; font-weight: bold; }
       .activity-box table { width: 100%; border-collapse: collapse; margin-top: 8px; }
       .activity-box th, .activity-box td { padding: 8px 6px; border-bottom: 1px dotted silver; text-align: left; vertical-align: top; }
       .activity-box td a { word-break: break-all; }
+      .activity-box .request-success a { color: #4c7a34; font-weight: bold; }
       .activity-pagination { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+      .activity-pagination button { margin-top: 0; }
       #footer { width: 100%; clear: both; text-align: right; color: gray; position: relative; z-index: 0; }
       @media (max-width: 900px) {
         .mobile-nav { position: relative; z-index: 2; display: flex; align-items: center; justify-content: flex-start; gap: 10px; padding: 8px 14px; border-bottom: 1px solid #d8d8d8; background: rgba(255,255,255,0.97); }
@@ -120,7 +127,7 @@
           <textarea id="importMnemonic" data-import-mnemonic></textarea>
           <div class="step-actions">
             <button type="button" data-import-cancel>Back</button>
-            <button type="button" data-import-wallet>Import Donation Wallet</button>
+            <button type="button" data-import-wallet disabled>Continue</button>
           </div>
         </div>
         <div data-donate-section="confirm" hidden>
@@ -201,8 +208,8 @@
               <button type="button" data-save-graffiti hidden>Save</button>
             </div>
             <p>
-              Shown on the stats page once this wallet has at least
-              <span data-graffiti-threshold>0.00100000 BTC</span>.
+              Graffiti will be shown on the stats page once this wallet has atleast
+              <span data-graffiti-threshold>the configured minimum</span>.
             </p>
             <div class="step-actions">
               <button type="button" data-start-donations>Start Fulfilling Donations</button>
@@ -214,10 +221,13 @@
             <h3>Send</h3>
             <label for="sendAddress">Bitcoin Address</label>
             <input id="sendAddress" data-send-address type="text" autocomplete="off" />
-            <label for="sendAmount">Amount (sats)</label>
-            <input id="sendAmount" data-send-amount type="number" min="1" step="1" />
+            <label for="sendAmount">Amount (BTC)</label>
+            <div class="send-amount-row">
+              <input id="sendAmount" data-send-amount type="text" inputmode="decimal" autocomplete="off" />
+              <button type="button" data-send-max>MAX</button>
+            </div>
             <div class="send-actions">
-              <button type="button" data-send-wallet>Send</button>
+              <button type="button" data-send-wallet disabled>Send</button>
               <span data-send-status></span>
             </div>
           </div>

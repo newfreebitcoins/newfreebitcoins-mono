@@ -267,6 +267,15 @@ export async function refreshFaucetRequest(requestId, refreshToken) {
   };
 }
 
+export async function cancelFaucetRequest(requestId, refreshToken) {
+  return postJson(
+    `${BACKEND_ENDPOINT}/api/faucet/request/${encodeURIComponent(requestId)}/cancel`,
+    {
+      refreshToken
+    }
+  );
+}
+
 export async function getWalletBalance(address) {
   const electrsResult = await getElectrsJson(
     `/address/${encodeURIComponent(address)}`

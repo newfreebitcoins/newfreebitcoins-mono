@@ -71,8 +71,8 @@ enum Commands {
     Send {
         #[arg(long)]
         address: String,
-        #[arg(long)]
-        amount_sats: u64,
+        #[arg(long, help = "Amount in BTC units like 0.001, or 'all' to send the maximum possible amount")]
+        amount: String,
     },
     Config,
 }
@@ -308,6 +308,41 @@ fn normalize_graffiti(value: &str) -> Result<String> {
 
 fn format_sats_as_btc(sats: u64, unit_label: &str) -> String {
     format!("{:.8} {}", sats as f64 / 100_000_000.0, unit_label)
+}
+
+fn parse_btc_amount_to_sats(value: &str) -> Result<u64> {
+    let trimmed = value.trim();
+
+    if !trimmed.chars().all(|ch| ch.is_ascii_digit() || ch == '.') || trimmed.is_empty() {
+        bail!("Enter an amount like 0.001 or use 'all'.");
+    }
+
+    let parts = trimmed.split('.').collect::<Vec<_>>();
+
+    if parts.len() > 2 || parts[0].is_empty() {
+        bail!("Enter an amount like 0.001 or use 'all'.");
+    }
+
+    let whole = parts[0]
+        .parse::<u64>()
+        .context("Unable to parse the whole BTC amount.")?;
+    let fractional = match parts.get(1) {
+        Some(value) => {
+            if value.len() > 8 {
+                bail!("BTC amounts support at most 8 decimal places.");
+            }
+
+            format!("{value:0<8}")
+                .parse::<u64>()
+                .context("Unable to parse the fractional BTC amount.")?
+        }
+        None => 0,
+    };
+
+    Ok(whole
+        .checked_mul(100_000_000)
+        .and_then(|value| value.checked_add(fractional))
+        .ok_or_else(|| anyhow!("BTC amount is too large."))?)
 }
 
 fn parse_network(value: &str) -> Result<Network> {
@@ -934,6 +969,28 @@ fn estimate_fee(input_count: u64, output_count: u64, fee_rate_sat_per_vbyte: u64
     virtual_bytes * fee_rate_sat_per_vbyte
 }
 
+fn calculate_max_send_sats(utxos: &[Utxo], fee_rate_sat_per_vbyte: u64) -> Result<u64> {
+    let confirmed_utxos = utxos
+        .iter()
+        .filter(|utxo| utxo.height > 0)
+        .collect::<Vec<_>>();
+
+    if confirmed_utxos.is_empty() {
+        bail!("This donation wallet has no confirmed spendable UTXOs.");
+    }
+
+    let total_input_value = confirmed_utxos
+        .iter()
+        .fold(0u64, |sum, utxo| sum.saturating_add(utxo.value));
+    let fee = estimate_fee(confirmed_utxos.len() as u64, 1, fee_rate_sat_per_vbyte);
+
+    if total_input_value <= fee {
+        bail!("This donation wallet does not have enough confirmed funds to cover the fee.");
+    }
+
+    Ok(total_input_value - fee)
+}
+
 fn heartbeat_message_digest(challenge: &str, graffiti: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(DONATION_HEARTBEAT_CONTEXT.as_bytes());
@@ -1153,13 +1210,20 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Send { address, amount_sats } => {
+        Commands::Send { address, amount } => {
             let destination = address_string(&address, wallet.network)?;
             let utxos: WalletUtxosResponse = get_json(
                 &client,
                 &format!("{}/api/donations/wallet-utxos?address={}", cli.backend, wallet.address),
             )
             .await?;
+            print_section("Manual Send");
+            print_kv("Hint", "Use --amount all to send the maximum possible amount.");
+            let amount_sats = if amount.trim().eq_ignore_ascii_case("all") {
+                calculate_max_send_sats(&utxos.utxos, configured_fee_rate_sat_per_vbyte)?
+            } else {
+                parse_btc_amount_to_sats(&amount)?
+            };
             let raw_tx =
                 build_tx(&wallet, &utxos.utxos, &[(destination, amount_sats)], configured_fee_rate_sat_per_vbyte)?;
             let payload = SendTransactionRequest {

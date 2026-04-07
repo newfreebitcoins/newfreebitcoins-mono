@@ -327,10 +327,11 @@
 
       <h2>Welcome to the NEW Bitcoin Faucet</h2>
       <p>
-        I, along with donors who want to help, am giving away 0.000025 bitcoins
-        (2500 satoshis) per visitor on April 6. You need to have an X account
-        and will be asked to solve a CAPTCHA to prove you are a person and not
-        a robot.
+        I, along with donors who want to help, am giving away
+        <span data-faucet-request-amount-btc>0.00002500 BTC</span>
+        (<span data-faucet-request-amount-sats>2,500 satoshis</span>)
+        per visitor on April 6. You need to have an X account and will be asked
+        to solve a CAPTCHA to prove you are a person and not a robot.
         <br />
         <br />
         <span class="hero-actions">
@@ -349,12 +350,12 @@
       </p>
       <h2>How long will the faucet last?</h2>
       <p>
-        The faucet will run from <b>blocks 943,950 to 944,200</b>. You can use
+        The faucet will run until block 945,000</b>. You can use
         the
         <a href="https://www.bitaroo.com.au/blockdateestimator/"
           >block date estimator</a
         >
-        to estimate what time those heights will occur in your time zone.
+        to estimate what time that height will occur in your time zone.
       </p>
       <h2>Wait, so is this like the original Faucet?</h2>
       <p>
@@ -364,19 +365,21 @@
         <b>The problem:</b> In the original version, Gavin Andresen put up the
         capital for the faucet. Because Bitcoin is much more expensive now, it
         is not feasible for me alone to put up the capital to give everyone
-        2500 sats. So instead, I took a different approach that allows the
-        faucet to be funded by the entire Bitcoin community without having a
-        centralized wallet control the faucet funds.
+        <span data-faucet-request-amount-sats>2,500 satoshis</span>.
+        So instead, I took a different approach that allows the faucet to be
+        funded by the entire Bitcoin community without having a centralized
+        wallet control the faucet funds.
       </p>
       <p>
         <b>The idea is this:</b>
       </p>
       <p>
-        <b>1.</b> Someone requests 2500 sats from the faucet. The faucet needs
-        to verify that this is a real user, so we check their X account to see
-        whether it was created over two years ago, which is much harder to
-        fake, and whether it is verified. If both are true, the request is
-        granted.
+        <b>1.</b> Someone requests
+        <span data-faucet-request-amount-sats>2,500 satoshis</span>
+        from the faucet. The faucet needs to verify that this is a real user,
+        so we check their X account to see whether it was created over two
+        years ago, which is much harder to fake, and whether it is verified.
+        If both are true, the request is granted.
       </p>
       <p>
         <b>2.</b> When a request is granted, it is added to a queue of pending
@@ -412,10 +415,12 @@
         is fully depleted?
       </h2>
       <p>
-        Yes. Before donating, you will be prompted to create a BIP32 mnemonic
-        phrase that controls this donation wallet. You can import this phrase
-        into any BIP32-compatible wallet to take full control of the address
-        and withdraw funds from it.
+        Yes. You can transfer it using this site or the CLI.
+        
+        Before donating, you will be prompted to create a BIP39 mnemonic
+        phrase that controls this donation wallet. You can also import this phrase
+        into any BIP39-compatible wallet to take full control of the address
+        and withdraw funds from it if you wish to use another wallet.
       </p>
       <h2>Why do I need an X account?</h2>
       <p>
