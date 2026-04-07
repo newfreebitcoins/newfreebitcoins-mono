@@ -226,12 +226,66 @@ fn default_storage_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("Unable to determine a local storage directory."))
 }
 
-fn wallet_file_path(data_dir: Option<&PathBuf>) -> Result<PathBuf> {
-    let base = match data_dir {
+fn wallet_storage_dir(data_dir: Option<&PathBuf>) -> Result<PathBuf> {
+    Ok(match data_dir {
         Some(path) => path.clone(),
         None => default_storage_dir()?,
-    };
+    })
+}
+
+fn network_name(network: Network) -> &'static str {
+    match network {
+        Network::Bitcoin => "mainnet",
+        Network::Regtest => "regtest",
+        _ => "unknown",
+    }
+}
+
+fn wallet_file_path(data_dir: Option<&PathBuf>, network: Network) -> Result<PathBuf> {
+    let base = wallet_storage_dir(data_dir)?;
+    Ok(base.join(format!("donor-wallet-{}.json", network_name(network))))
+}
+
+fn legacy_wallet_file_path(data_dir: Option<&PathBuf>) -> Result<PathBuf> {
+    let base = wallet_storage_dir(data_dir)?;
     Ok(base.join(STORAGE_FILE))
+}
+
+fn find_wallet_source_path(data_dir: Option<&PathBuf>, network: Network) -> Result<Option<PathBuf>> {
+    let current = wallet_file_path(data_dir, network)?;
+
+    if current.exists() {
+        return Ok(Some(current));
+    }
+
+    let legacy = legacy_wallet_file_path(data_dir)?;
+
+    if legacy.exists() {
+        return Ok(Some(legacy));
+    }
+
+    for candidate in [Network::Bitcoin, Network::Regtest] {
+        if candidate == network {
+            continue;
+        }
+
+        let path = wallet_file_path(data_dir, candidate)?;
+
+        if path.exists() {
+            return Ok(Some(path));
+        }
+    }
+
+    Ok(None)
+}
+
+fn load_stored_wallet_from_path(path: &PathBuf) -> Result<StoredWallet> {
+    let raw = fs::read(path).context("Unable to read stored donor wallet")?;
+    serde_json::from_slice(&raw).context("Stored donor wallet is invalid JSON")
+}
+
+fn write_stored_wallet_to_path(path: &PathBuf, stored: &StoredWallet) -> Result<()> {
+    fs::write(path, serde_json::to_vec_pretty(stored)?).context("Unable to save wallet")
 }
 
 fn default_max_requests_per_tx() -> usize {
@@ -473,39 +527,55 @@ fn confirm_mnemonic_words(mnemonic: &Mnemonic) -> Result<()> {
     Ok(())
 }
 
+fn build_stored_wallet(
+    mnemonic: &Mnemonic,
+    password: &str,
+    network: Network,
+    template: Option<&StoredWallet>,
+) -> Result<StoredWallet> {
+    let (address, derivation_path, _private_key, _public_key) =
+        derive_address_and_key(mnemonic, network)?;
+    let (cipher_text, salt, iv) = encrypt_mnemonic(&mnemonic.to_string(), password)?;
+
+    Ok(StoredWallet {
+        network: network_name(network).to_string(),
+        address,
+        derivation_path: derivation_path.to_string(),
+        created_at: match template {
+            Some(stored) => stored.created_at.clone(),
+            None => chrono_timestamp_string()?,
+        },
+        cipher_text,
+        salt,
+        iv,
+        max_requests_per_tx: template
+            .map(|stored| stored.max_requests_per_tx)
+            .unwrap_or_else(default_max_requests_per_tx),
+        fee_rate_sat_per_vbyte: template
+            .map(|stored| stored.fee_rate_sat_per_vbyte)
+            .unwrap_or_else(default_fee_rate_sat_per_vbyte),
+        graffiti: template
+            .map(|stored| stored.graffiti.clone())
+            .unwrap_or_default(),
+    })
+}
+
 fn save_wallet(
     data_dir: Option<&PathBuf>,
     mnemonic: &Mnemonic,
     password: &str,
     backend_network: Network,
 ) -> Result<DecryptedWallet> {
-    let path = wallet_file_path(data_dir)?;
+    let path = wallet_file_path(data_dir, backend_network)?;
     let storage_dir = path
         .parent()
         .ok_or_else(|| anyhow!("Unable to determine wallet storage directory."))?;
     fs::create_dir_all(storage_dir).context("Unable to create wallet storage directory")?;
 
-    let (address, _derivation_path, _private_key, _public_key) =
-        derive_address_and_key(&mnemonic, backend_network)?;
-    let (cipher_text, salt, iv) = encrypt_mnemonic(&mnemonic.to_string(), password)?;
-    let stored = StoredWallet {
-        network: match backend_network {
-            Network::Bitcoin => "mainnet".to_string(),
-            Network::Regtest => "regtest".to_string(),
-            _ => unreachable!(),
-        },
-        address: address.clone(),
-            derivation_path: _derivation_path.to_string(),
-        created_at: chrono_timestamp_string()?,
-        cipher_text,
-        salt,
-        iv,
-        max_requests_per_tx: default_max_requests_per_tx(),
-        fee_rate_sat_per_vbyte: default_fee_rate_sat_per_vbyte(),
-        graffiti: String::new(),
-    };
+    let stored = build_stored_wallet(mnemonic, password, backend_network, None)?;
+    let address = stored.address.clone();
 
-    fs::write(&path, serde_json::to_vec_pretty(&stored)?).context("Unable to save wallet")?;
+    write_stored_wallet_to_path(&path, &stored)?;
 
     println!();
     print_section("Wallet Created");
@@ -516,15 +586,18 @@ fn save_wallet(
     Ok(DecryptedWallet { mnemonic: mnemonic.clone(), address, network: backend_network })
 }
 
-fn load_stored_wallet(data_dir: Option<&PathBuf>) -> Result<StoredWallet> {
-    let path = wallet_file_path(data_dir)?;
-    let raw = fs::read(&path).context("Unable to read stored donor wallet")?;
-    serde_json::from_slice(&raw).context("Stored donor wallet is invalid JSON")
+fn load_stored_wallet(data_dir: Option<&PathBuf>, network: Network) -> Result<StoredWallet> {
+    let path = wallet_file_path(data_dir, network)?;
+    load_stored_wallet_from_path(&path)
 }
 
-fn write_stored_wallet(data_dir: Option<&PathBuf>, stored: &StoredWallet) -> Result<()> {
-    let path = wallet_file_path(data_dir)?;
-    fs::write(&path, serde_json::to_vec_pretty(stored)?).context("Unable to save wallet")
+fn write_stored_wallet(data_dir: Option<&PathBuf>, network: Network, stored: &StoredWallet) -> Result<()> {
+    let path = wallet_file_path(data_dir, network)?;
+    let storage_dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("Unable to determine wallet storage directory."))?;
+    fs::create_dir_all(storage_dir).context("Unable to create wallet storage directory")?;
+    write_stored_wallet_to_path(&path, stored)
 }
 
 fn prompt_import_mnemonic() -> Result<Mnemonic> {
@@ -568,11 +641,6 @@ fn prompt_import_wallet(data_dir: Option<&PathBuf>, backend_network: Network) ->
     println!();
     print_section("Step 2: Choose A Password");
     let password = prompt_new_password()?;
-    clear_screen()?;
-    print_header("NEW FREE BITCOINS", "Confirm Your Mnemonic");
-    println!("Confirm a few words from your mnemonic phrase.");
-    println!();
-    confirm_mnemonic_words(&mnemonic)?;
     save_wallet(data_dir, &mnemonic, &password, backend_network)
 }
 
@@ -610,45 +678,44 @@ fn load_or_create_wallet(
     password: Option<&str>,
     backend_network: Network,
 ) -> Result<DecryptedWallet> {
-    let path = wallet_file_path(data_dir)?;
+    let source_path = match find_wallet_source_path(data_dir, backend_network)? {
+        Some(path) => path,
+        None => {
+            return prompt_initial_wallet_setup(data_dir, backend_network);
+        }
+    };
 
-    if !path.exists() {
+    let current_path = wallet_file_path(data_dir, backend_network)?;
+
+    if source_path == current_path && !current_path.exists() {
         return prompt_initial_wallet_setup(data_dir, backend_network);
     }
 
     let password =
         password.ok_or_else(|| anyhow!("This wallet already exists. Re-run the command with --password to unlock it."))?;
 
-    let stored = load_stored_wallet(data_dir)?;
-
-    let stored_network = parse_network(&stored.network)?;
-    if stored_network != backend_network {
-        bail!(
-            "Stored wallet was created for {} but backend is using {}.",
-            stored.network,
-            match backend_network {
-                Network::Bitcoin => "mainnet",
-                Network::Regtest => "regtest",
-                _ => "unknown",
-            }
-        );
-    }
+    let stored = load_stored_wallet_from_path(&source_path)?;
 
     let mnemonic_text = decrypt_mnemonic(&stored, password)?;
     let mnemonic = Mnemonic::parse_in_normalized(Language::English, &mnemonic_text)
         .context("Stored mnemonic could not be parsed")?;
-    let (address, _derivation_path, _private_key, _public_key) =
+    let (address, derivation_path, _private_key, _public_key) =
         derive_address_and_key(&mnemonic, backend_network)?;
 
-    if address != stored.address {
-        bail!("Stored wallet address does not match derived mnemonic address.");
+    if source_path != current_path
+        || stored.network != network_name(backend_network)
+        || stored.address != address
+        || stored.derivation_path != derivation_path.to_string()
+    {
+        let migrated = build_stored_wallet(&mnemonic, password, backend_network, Some(&stored))?;
+        write_stored_wallet(data_dir, backend_network, &migrated)?;
     }
 
     Ok(DecryptedWallet { mnemonic, address, network: backend_network })
 }
 
-fn load_wallet_settings(data_dir: Option<&PathBuf>) -> Result<(usize, u64, String)> {
-    let stored = load_stored_wallet(data_dir)?;
+fn load_wallet_settings(data_dir: Option<&PathBuf>, backend_network: Network) -> Result<(usize, u64, String)> {
+    let stored = load_stored_wallet(data_dir, backend_network)?;
     Ok((
         stored.max_requests_per_tx,
         stored.fee_rate_sat_per_vbyte,
@@ -656,8 +723,10 @@ fn load_wallet_settings(data_dir: Option<&PathBuf>) -> Result<(usize, u64, Strin
     ))
 }
 
-fn run_config_tui(data_dir: Option<&PathBuf>) -> Result<()> {
-    let mut stored = load_stored_wallet(data_dir)?;
+fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Result<()> {
+    let source_path = find_wallet_source_path(data_dir, backend_network)?
+        .ok_or_else(|| anyhow!("No donor wallet exists yet. Run any wallet command first to create or import one."))?;
+    let mut stored = load_stored_wallet_from_path(&source_path)?;
     clear_screen()?;
     print_header("NEW FREE BITCOINS", "CLI Wallet Configuration");
     print_kv("Address", &stored.address);
@@ -692,7 +761,7 @@ fn run_config_tui(data_dir: Option<&PathBuf>) -> Result<()> {
         "Graffiti",
         &stored.graffiti,
     )?)?;
-    write_stored_wallet(data_dir, &stored)?;
+    write_stored_wallet_to_path(&source_path, &stored)?;
     println!();
     print_success("Wallet settings saved.");
     print_kv("Max Requests", &stored.max_requests_per_tx.to_string());
@@ -1021,20 +1090,20 @@ async fn main() -> Result<()> {
     let config: ConfigResponse =
         get_json(&client, &format!("{}/api/config", cli.backend)).await?;
     let backend_network = parse_network(&config.network)?;
-    let wallet_exists = wallet_file_path(cli.data_dir.as_ref())?.exists();
+    let wallet_exists = find_wallet_source_path(cli.data_dir.as_ref(), backend_network)?.is_some();
 
     if matches!(cli.command, Commands::Config) && !wallet_exists {
         bail!("No donor wallet exists yet. Run any wallet command first to create or import one.");
     }
 
     if matches!(cli.command, Commands::Config) {
-        run_config_tui(cli.data_dir.as_ref())?;
+        run_config_tui(cli.data_dir.as_ref(), backend_network)?;
         return Ok(());
     }
 
     let wallet = load_or_create_wallet(cli.data_dir.as_ref(), cli.password.as_deref(), backend_network)?;
     let (configured_max_requests, configured_fee_rate_sat_per_vbyte, configured_graffiti) =
-        load_wallet_settings(cli.data_dir.as_ref())?;
+        load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
     clear_screen()?;
     print_header("NEW FREE BITCOINS", "Donor CLI");
     print_kv("Backend", &cli.backend);
@@ -1118,9 +1187,9 @@ async fn main() -> Result<()> {
             let max_requests = max_requests.unwrap_or(configured_max_requests);
             let graffiti = if let Some(graffiti) = graffiti {
                 let graffiti = normalize_graffiti(&graffiti)?;
-                let mut stored = load_stored_wallet(cli.data_dir.as_ref())?;
+                let mut stored = load_stored_wallet(cli.data_dir.as_ref(), backend_network)?;
                 stored.graffiti = graffiti.clone();
-                write_stored_wallet(cli.data_dir.as_ref(), &stored)?;
+                write_stored_wallet(cli.data_dir.as_ref(), backend_network, &stored)?;
                 graffiti
             } else {
                 configured_graffiti.clone()

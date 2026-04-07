@@ -26,7 +26,8 @@ import {
   isLikelyAddressForNetwork
 } from "../consts.js";
 
-const STORAGE_KEY = "donationWallet";
+const STORAGE_KEY_PREFIX = "donationWallet";
+const LEGACY_STORAGE_KEY = STORAGE_KEY_PREFIX;
 const DUST_THRESHOLD = 546;
 const WALLET_AUTO_REFRESH_MS = 10000;
 const GRAFFITI_MAX_LENGTH = 80;
@@ -108,8 +109,8 @@ function getCoinLabel() {
   return appConfig?.unitLabel ?? "BTC";
 }
 
-function getStoredWallet() {
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+function readStoredWallet(key) {
+  const raw = window.localStorage.getItem(key);
 
   if (!raw) {
     return null;
@@ -122,8 +123,73 @@ function getStoredWallet() {
   }
 }
 
-function storeWallet(payload) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+function getCurrentNetwork() {
+  return appConfig?.network ?? "mainnet";
+}
+
+function getStorageKey(network = getCurrentNetwork()) {
+  return `${STORAGE_KEY_PREFIX}:${network}`;
+}
+
+function getStoredWalletForNetwork(network) {
+  return readStoredWallet(getStorageKey(network));
+}
+
+function getLegacyStoredWallet() {
+  return readStoredWallet(LEGACY_STORAGE_KEY);
+}
+
+function getStoredWallet() {
+  return getStoredWalletForNetwork(getCurrentNetwork());
+}
+
+function getUnlockSourceWalletInfo() {
+  const currentNetwork = getCurrentNetwork();
+  const currentWallet = getStoredWalletForNetwork(currentNetwork);
+
+  if (currentWallet) {
+    return {
+      wallet: currentWallet,
+      key: getStorageKey(currentNetwork),
+      isCurrentNetwork: true
+    };
+  }
+
+  const legacyWallet = getLegacyStoredWallet();
+
+  if (legacyWallet) {
+    return {
+      wallet: legacyWallet,
+      key: LEGACY_STORAGE_KEY,
+      isCurrentNetwork: legacyWallet.network === currentNetwork
+    };
+  }
+
+  for (const network of Object.keys(NETWORK_CONFIG)) {
+    if (network === currentNetwork) {
+      continue;
+    }
+
+    const wallet = getStoredWalletForNetwork(network);
+
+    if (wallet) {
+      return {
+        wallet,
+        key: getStorageKey(network),
+        isCurrentNetwork: false
+      };
+    }
+  }
+
+  return {
+    wallet: null,
+    key: "",
+    isCurrentNetwork: false
+  };
+}
+
+function storeWallet(payload, network = getCurrentNetwork()) {
+  window.localStorage.setItem(getStorageKey(network), JSON.stringify(payload));
 }
 
 function updateStoredWallet(patch) {
@@ -140,7 +206,7 @@ function updateStoredWallet(patch) {
 }
 
 function clearWallet() {
-  window.localStorage.removeItem(STORAGE_KEY);
+  window.localStorage.removeItem(getStorageKey());
 }
 
 function setMessage(text, type = "") {
@@ -774,14 +840,6 @@ function prepareMnemonicFlow(mnemonic) {
   setHash(DONATE_HASHES.createPassword);
 }
 
-function isStoredWalletCompatible(storedWallet) {
-  if (!storedWallet || !storedWallet.network) {
-    return true;
-  }
-
-  return storedWallet.network === appConfig?.network;
-}
-
 function clearUnlockedWalletRuntime() {
   clearScheduledCycle();
   clearWalletAutoRefresh();
@@ -1277,20 +1335,10 @@ async function renderUnlockedWallet(addressOverride) {
 }
 
 async function unlockStoredWallet(password) {
-  const storedWallet = getStoredWallet();
+  const { wallet: storedWallet } = getUnlockSourceWalletInfo();
 
   if (!storedWallet) {
     showSection("onboarding");
-    return;
-  }
-
-  if (!isStoredWalletCompatible(storedWallet)) {
-    setMessage(
-      `This donation wallet was saved for ${storedWallet.network}. Switch the backend network back or delete the saved wallet first.`,
-      "error"
-    );
-    showSection("locked");
-    window.history.replaceState(null, "", DONATE_HASHES.unlockWallet);
     return;
   }
 
@@ -1304,6 +1352,12 @@ async function unlockStoredWallet(password) {
 
     const wallet = deriveWallet(mnemonic);
     unlockedWalletState = wallet;
+    storeWallet({
+      ...storedWallet,
+      network: appConfig.network,
+      address: wallet.address,
+      derivationPath: wallet.derivationPath
+    });
     await renderUnlockedWallet(wallet.address);
   } catch {
     setMessage("Unable to unlock the donation wallet with that password.", "error");
@@ -1314,20 +1368,23 @@ async function unlockStoredWallet(password) {
 function renderLockedState() {
   const deleteButton = $("[data-delete-wallet]");
   const addressNode = $("[data-locked-address]");
-  const storedWallet = getStoredWallet();
+  const unlockSource = getUnlockSourceWalletInfo();
+  const storedWallet = unlockSource.wallet;
 
   if (addressNode) {
-    addressNode.textContent = storedWallet?.address ?? "";
+    addressNode.textContent = unlockSource.isCurrentNetwork
+      ? storedWallet?.address ?? ""
+      : "";
   }
 
   if (deleteButton) {
     deleteButton.hidden = appConfig?.network !== "regtest";
   }
 
-  if (storedWallet && !isStoredWalletCompatible(storedWallet)) {
+  if (storedWallet && !unlockSource.isCurrentNetwork) {
     setMessage(
-      `This donation wallet was saved for ${storedWallet.network}. Switch the backend network back or delete the saved wallet first.`,
-      "error"
+      `Unlock this donation wallet to load its ${NETWORK_CONFIG[appConfig.network].label} address.`,
+      ""
     );
   } else {
     setMessage("", "");
@@ -1339,7 +1396,7 @@ function renderLockedState() {
 
 function applyHashRoute() {
   const hash = getCurrentHash();
-  const hasStoredWallet = Boolean(getStoredWallet());
+  const hasStoredWallet = Boolean(getUnlockSourceWalletInfo().wallet);
   const hasPendingMnemonic = Boolean(pendingMnemonic);
 
   if (hash === DONATE_HASHES.importWallet) {

@@ -1,5 +1,7 @@
 import { BACKEND_ENDPOINT } from "./consts.js";
 
+let runtimeConfigPromise = null;
+
 function getElectrsApiBaseUrl() {
   const configured = window.__APP_CONFIG__?.electrs?.apiBaseUrl;
 
@@ -184,19 +186,33 @@ export async function getFaucetInfo() {
 }
 
 export async function getAppConfig() {
-  const result = await getJson(`${BACKEND_ENDPOINT}/api/config`);
-
-  if (!result.ok) {
+  if (window.__APP_CONFIG__) {
     return {
-      ok: false,
-      error: result.error
+      ok: true,
+      data: window.__APP_CONFIG__
     };
   }
 
-  return {
-    ok: true,
-    data: result.data
-  };
+  if (!runtimeConfigPromise) {
+    runtimeConfigPromise = getJson(`${BACKEND_ENDPOINT}/api/config`).then((result) => {
+      if (!result.ok) {
+        runtimeConfigPromise = null;
+        return {
+          ok: false,
+          error: result.error
+        };
+      }
+
+      window.__APP_CONFIG__ = result.data;
+
+      return {
+        ok: true,
+        data: result.data
+      };
+    });
+  }
+
+  return runtimeConfigPromise;
 }
 
 export async function getRuntimeConfig() {
