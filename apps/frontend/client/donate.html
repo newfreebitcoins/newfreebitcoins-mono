@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Donate to the Faucet</title>
-    <link rel="image_src" href="./assets/FountainImage_small.png" />
-    <script type="module" src="./scripts/app.js"></script>
+    <link rel="image_src" href="../assets/FountainImage_small.png" />
+    <script type="module" src="../scripts/app.js"></script>
     <style>
       body { margin: 0; padding: 0; background-color: #fff; font-family: Arial, Helvetica, Verdana, sans-serif; font-size: 75%; color: #575757; position: relative; }
       .faucet-art { position: absolute; top: 5px; left: 5px; width: 235px; height: 390px; pointer-events: none; z-index: 0; }
@@ -73,38 +73,38 @@
   </head>
   <body data-page="donate">
     <div class="mobile-nav">
-      <img class="mobile-faucet" src="./assets/FountainImage_small.png" alt="" />
+      <img class="mobile-faucet" src="../assets/FountainImage_small.png" alt="" />
       <div class="nav-left">
         <p class="btc-available" data-total-btc>0 BTC available</p>
         <a href="/recent_sends">Recent Sends</a>
-        <a href="./faucet-request/">Request</a>
-        <a href="./pending-requests/">Pending Requests</a>
-        <a href="./stats/">Stats</a>
-        <a href="./donate/">Donate</a>
+        <a href="../faucet-request/">Request</a>
+        <a href="../pending-requests/">Pending Requests</a>
+        <a href="../stats/">Stats</a>
+        <a href="../donate/">Donate</a>
         <a href="https://github.com/orgs/newfreebitcoins/repositories">Our Github</a>
       </div>
     </div>
-    <div class="faucet-art" aria-hidden="true"><img src="./assets/FountainImage_small.png" alt="" /></div>
+    <div class="faucet-art" aria-hidden="true"><img src="../assets/FountainImage_small.png" alt="" /></div>
     <div class="leftNav">
       <p data-total-btc>0 BTC available</p>
       <ul>
         <li><a href="/recent_sends">Recent Sends</a></li>
-        <li><a href="./faucet-request/">Request</a></li>
-        <li><a href="./pending-requests/">Pending Requests</a></li>
-        <li><a href="./stats/">Stats</a></li>
-        <li><a href="./donate/">Donate</a></li>
+        <li><a href="../faucet-request/">Request</a></li>
+        <li><a href="../pending-requests/">Pending Requests</a></li>
+        <li><a href="../stats/">Stats</a></li>
+        <li><a href="../donate/">Donate</a></li>
         <li><a href="https://github.com/orgs/newfreebitcoins/repositories">Our Github</a></li>
       </ul>
     </div>
     <div class="main">
-      <div id="hometitle"><h1><span class="new-badge">New</span><a href="./index.html">Free Bitcoins</a></h1></div>
+      <div id="hometitle"><h1><span class="new-badge">New</span><a href="../index.html">Free Bitcoins</a></h1></div>
       <div class="panel">
         <div class="donate-banner" data-donate-message hidden></div>
         <div data-donate-section="onboarding">
           <h2>Donate to the Faucet</h2>
           <p><b>This faucet does not use a centralized donation wallet.</b> Donors send BTC directly to queued faucet participants, so before you can donate you need a wallet that stays under your control.</p>
           <h3>How It Works</h3>
-          <p><b>1.</b> Create a new donation wallet here, or import an existing mnemonic phrase.</p>
+          <p><b>1.</b> Create a new donation wallet here.</p>
           <p><b>2.</b> Deposit BTC into that donation wallet. This is the wallet the faucet will use when it sends funds to approved participants.</p>
           <p><b>3.</b> When donating is enabled, your browser will use that donation wallet to construct and submit transactions directly to queued faucet requests.</p>
           <p><b>4.</b> Your mnemonic phrase is encrypted locally with your password, and each time you reload the page you unlock the donation wallet again with that password.</p>
@@ -123,6 +123,7 @@
         <div data-donate-section="import" hidden>
           <h2>Import Donation Wallet</h2>
           <p>Paste your mnemonic phrase below to import an existing donation wallet into this browser.</p>
+          <b>DO NOT PASTE YOUR PERSONAL WALLET'S MNEMONIC PHRASE!!! ONLY USE THIS AS A BACKUP IF YOU CREATED A WALLET IN THE FAUCET</b>
           <label for="importMnemonic">Mnemonic Phrase</label>
           <textarea id="importMnemonic" data-import-mnemonic></textarea>
           <div class="step-actions">
@@ -253,6 +254,6 @@
         </div>
       </div>
     </div>
-    <div id="footer">Back to <a href="./index.html">the faucet homepage</a>.</div>
+    <div id="footer">Back to <a href="../index.html">the faucet homepage</a>.</div>
   </body>
 </html>
