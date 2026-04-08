@@ -1203,6 +1203,12 @@ app.post("/api/faucet/request/:requestId/refresh", async (request, response) => 
     return;
   }
 
+  if (config.faucet.requireVerified && !faucetRequest.xVerified) {
+    await faucetRequest.destroy();
+    response.status(403).json({ error: "x_account_not_verified" });
+    return;
+  }
+
   if (faucetRequest.status !== "pending" && faucetRequest.status !== "expired") {
     response.status(409).json({ error: "request_not_refreshable" });
     return;
