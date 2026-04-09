@@ -3,7 +3,7 @@ import {
   getFaucetInfo,
   getFaucetRequestById,
   refreshFaucetRequest,
-  startFaucetRequest
+  redirectToFaucetRequestStart
 } from "../api.js";
 import {
   formatSatsAsCoins,
@@ -36,6 +36,8 @@ const ERROR_MESSAGES = {
   x_oauth_denied: "X authorization was canceled.",
   x_oauth_invalid_callback: "The X callback was incomplete.",
   x_oauth_state_missing: "The X session expired. Please try again.",
+  x_oauth_session_mismatch:
+    "The X authorization must be completed in the same browser that started it.",
   x_oauth_browser_mismatch:
     "The X authorization must be completed in the same browser that started it.",
   x_oauth_request_failed: "The X authorization flow failed. Please try again.",
@@ -602,25 +604,7 @@ export async function initFaucetRequestPage() {
     updateFormMessage("", "");
 
     submitButton.disabled = true;
-
-    const result = await startFaucetRequest(bitcoinAddressInput.value.trim());
-
-    submitButton.disabled = false;
-
-    if (!result.ok) {
-      updateFormMessage(
-        ERROR_MESSAGES[result.error] ?? "The request could not be completed.",
-        "error"
-      );
-      return;
-    }
-
-    if (!result.authorizationUrl) {
-      updateFormMessage("The X authorization URL was missing.", "error");
-      return;
-    }
-
-    window.location.href = result.authorizationUrl;
+    redirectToFaucetRequestStart(bitcoinAddressInput.value.trim());
   });
 
   window.addEventListener("beforeunload", () => {

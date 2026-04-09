@@ -234,6 +234,23 @@ export async function startFaucetRequest(bitcoinAddress) {
   };
 }
 
+export function redirectToFaucetRequestStart(bitcoinAddress) {
+  const form = document.createElement("form");
+  const addressInput = document.createElement("input");
+
+  form.method = "POST";
+  form.action = `${BACKEND_ENDPOINT}/api/faucet/request/start?redirect=1`;
+  form.style.display = "none";
+
+  addressInput.type = "hidden";
+  addressInput.name = "bitcoinAddress";
+  addressInput.value = bitcoinAddress;
+
+  form.appendChild(addressInput);
+  document.body.appendChild(form);
+  form.submit();
+}
+
 export async function getFaucetRequestById(requestId) {
   const result = await getJson(
     `${BACKEND_ENDPOINT}/api/faucet/request/${encodeURIComponent(requestId)}`

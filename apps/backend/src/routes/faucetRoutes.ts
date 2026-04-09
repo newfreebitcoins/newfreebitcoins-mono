@@ -228,8 +228,14 @@ export function registerFaucetRoutes(app: express.Router) {
 
   app.post("/faucet/request/start", async (request, response) => {
     const bitcoinAddress = String(request.body?.bitcoinAddress ?? "").trim();
+    const shouldRedirect = String(request.query.redirect ?? "").trim() === "1";
 
     if (!isValidBitcoinAddress(bitcoinAddress)) {
+      if (shouldRedirect) {
+        sendFrontendRedirect(response, getErrorRedirect("invalid_bitcoin_address"));
+        return;
+      }
+
       response.status(400).json({ error: "invalid_bitcoin_address" });
       return;
     }
@@ -256,9 +262,15 @@ export function registerFaucetRoutes(app: express.Router) {
     });
 
     setOAuthStateCookie(response, state, sessionSecret);
+    const authorizationUrl = buildXAuthorizationUrl(state, codeChallenge);
+
+    if (shouldRedirect) {
+      response.redirect(303, authorizationUrl);
+      return;
+    }
 
     response.json({
-      authorizationUrl: buildXAuthorizationUrl(state, codeChallenge)
+      authorizationUrl
     });
   });
 

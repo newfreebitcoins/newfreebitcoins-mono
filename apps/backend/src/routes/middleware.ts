@@ -3,6 +3,7 @@ import { setCorsHeaders } from "../appRuntime.js";
 
 export function registerGlobalMiddleware(app: express.Router) {
   app.use(express.json());
+  app.use(express.urlencoded({ extended: false }));
   app.use((request, response, next) => {
     setCorsHeaders(response);
 
