@@ -219,9 +219,10 @@ export async function getRuntimeConfig() {
   return getAppConfig();
 }
 
-export async function startFaucetRequest(bitcoinAddress) {
+export async function startFaucetRequest(bitcoinAddress, sessionSecret) {
   const result = await postJson(`${BACKEND_ENDPOINT}/api/faucet/request/start`, {
-    bitcoinAddress
+    bitcoinAddress,
+    sessionSecret
   });
 
   if (!result.ok) {
@@ -230,25 +231,27 @@ export async function startFaucetRequest(bitcoinAddress) {
 
   return {
     ok: true,
+    state: result.data?.state ?? "",
     authorizationUrl: result.data?.authorizationUrl ?? ""
   };
 }
 
-export function redirectToFaucetRequestStart(bitcoinAddress) {
-  const form = document.createElement("form");
-  const addressInput = document.createElement("input");
+export async function completeFaucetRequestOAuth(state, code, sessionSecret) {
+  const result = await postJson(`${BACKEND_ENDPOINT}/api/faucet/request/complete`, {
+    state,
+    code,
+    sessionSecret
+  });
 
-  form.method = "POST";
-  form.action = `${BACKEND_ENDPOINT}/api/faucet/request/start?redirect=1`;
-  form.style.display = "none";
+  if (!result.ok) {
+    return result;
+  }
 
-  addressInput.type = "hidden";
-  addressInput.name = "bitcoinAddress";
-  addressInput.value = bitcoinAddress;
-
-  form.appendChild(addressInput);
-  document.body.appendChild(form);
-  form.submit();
+  return {
+    ok: true,
+    requestId: result.data?.requestId ?? null,
+    refreshToken: result.data?.refreshToken ?? ""
+  };
 }
 
 export async function getFaucetRequestById(requestId) {

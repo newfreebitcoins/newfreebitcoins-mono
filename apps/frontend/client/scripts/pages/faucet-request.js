@@ -1,9 +1,10 @@
 import {
   cancelFaucetRequest,
+  completeFaucetRequestOAuth,
   getFaucetInfo,
   getFaucetRequestById,
   refreshFaucetRequest,
-  redirectToFaucetRequestStart
+  startFaucetRequest
 } from "../api.js";
 import {
   formatSatsAsCoins,
@@ -14,6 +15,7 @@ import {
 
 const STORAGE_KEY = "faucetRequestId";
 const REFRESH_TOKEN_STORAGE_KEY = "faucetRequestRefreshToken";
+const OAUTH_SESSION_STORAGE_PREFIX = "faucetOAuthSession:";
 const AUTO_REFRESH_MS = 10000;
 let refreshCountdownInterval = null;
 let requestAutoRefreshInterval = null;
@@ -62,12 +64,26 @@ function getQueryParams() {
   return new URLSearchParams(window.location.search);
 }
 
+function getOAuthSessionStorageKey(state) {
+  return `${OAUTH_SESSION_STORAGE_PREFIX}${state}`;
+}
+
+function createOAuthSessionSecret() {
+  const bytes = new Uint8Array(32);
+  window.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function consumeQueryState() {
   const params = getQueryParams();
+  const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
   const requestId = params.get("requestId");
   const refreshToken = params.get("refreshToken");
   const error = params.get("error");
   const errorDetail = params.get("errorDetail");
+  const oauthState = hashParams.get("oauthState");
+  const oauthCode = hashParams.get("oauthCode");
+  const oauthStatus = hashParams.get("oauthStatus");
   const status = params.get("status");
 
   if (requestId) {
@@ -82,6 +98,9 @@ function consumeQueryState() {
 
   return {
     requestId,
+    oauthState,
+    oauthCode,
+    oauthStatus,
     error: error
       ? `${ERROR_MESSAGES[error] ?? "The request could not be completed."}${
           errorDetail ? ` (${errorDetail})` : ""
@@ -439,7 +458,7 @@ export async function initFaucetRequestPage() {
   const refreshButton = document.querySelector("[data-request-refresh]");
   const finalizeBlock = document.querySelector("[data-finalize-block]");
   const resetButton = document.querySelector("[data-reset-request]");
-  const { error, status } = consumeQueryState();
+  const { error, status, oauthState, oauthCode, oauthStatus } = consumeQueryState();
   const faucetInfoResult = await getFaucetInfo();
 
   if (faucetInfoResult.ok) {
@@ -474,6 +493,72 @@ export async function initFaucetRequestPage() {
 
   showSection("loading");
   clearRequestAutoRefresh();
+
+  if (oauthState || oauthCode || oauthStatus) {
+    if (!(oauthState && oauthCode && oauthStatus === "ready")) {
+      updateFormMessage(ERROR_MESSAGES.x_oauth_invalid_callback, "error");
+      showSection("form");
+      return;
+    }
+
+    const oauthSessionSecret = window.sessionStorage.getItem(
+      getOAuthSessionStorageKey(oauthState)
+    );
+
+    if (!oauthSessionSecret) {
+      updateFormMessage(ERROR_MESSAGES.x_oauth_session_mismatch, "error");
+      clearSavedRequestId();
+      clearSavedRefreshToken();
+      showSection("form");
+      return;
+    }
+
+    const completionResult = await completeFaucetRequestOAuth(
+      oauthState,
+      oauthCode,
+      oauthSessionSecret
+    );
+
+    if (!completionResult.ok) {
+      if (
+        completionResult.error === "x_oauth_session_mismatch" ||
+        completionResult.error === "x_oauth_state_missing" ||
+        completionResult.error === "x_oauth_invalid_callback"
+      ) {
+        window.sessionStorage.removeItem(getOAuthSessionStorageKey(oauthState));
+      }
+
+      updateFormMessage(
+        ERROR_MESSAGES[completionResult.error] ??
+          "The X authorization could not be completed.",
+        "error"
+      );
+      showSection("form");
+      return;
+    }
+
+    window.sessionStorage.removeItem(getOAuthSessionStorageKey(oauthState));
+
+    if (completionResult.requestId) {
+      window.localStorage.setItem(STORAGE_KEY, String(completionResult.requestId));
+    }
+
+    if (completionResult.refreshToken) {
+      window.localStorage.setItem(
+        REFRESH_TOKEN_STORAGE_KEY,
+        completionResult.refreshToken
+      );
+    }
+
+    syncSavedRequestControls();
+    await loadSavedRequest("Your faucet request has been added to the queue.");
+
+    if (getSavedRequestId()) {
+      startRequestAutoRefresh();
+    }
+
+    return;
+  }
 
   if (error) {
     updateFormMessage(error, "error");
@@ -604,7 +689,29 @@ export async function initFaucetRequestPage() {
     updateFormMessage("", "");
 
     submitButton.disabled = true;
-    redirectToFaucetRequestStart(bitcoinAddressInput.value.trim());
+    const sessionSecret = createOAuthSessionSecret();
+    const result = await startFaucetRequest(bitcoinAddressInput.value.trim(), sessionSecret);
+
+    submitButton.disabled = false;
+
+    if (!result.ok) {
+      updateFormMessage(
+        ERROR_MESSAGES[result.error] ?? "The request could not be completed.",
+        "error"
+      );
+      return;
+    }
+
+    if (!result.authorizationUrl || !result.state) {
+      updateFormMessage("The X authorization URL was missing.", "error");
+      return;
+    }
+
+    window.sessionStorage.setItem(
+      getOAuthSessionStorageKey(result.state),
+      sessionSecret
+    );
+    window.location.href = result.authorizationUrl;
   });
 
   window.addEventListener("beforeunload", () => {

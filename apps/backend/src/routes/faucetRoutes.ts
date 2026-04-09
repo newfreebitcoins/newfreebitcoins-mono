@@ -4,25 +4,21 @@ import {
   activeNetwork,
   clearExpiredFaucetRequests,
   clearExpiredReservations,
-  clearOAuthStateCookie,
   config,
   createRefreshSecret,
   formatSatsAsBtc,
-  getCookieValue,
   getErrorRedirect,
   getErrorRedirectWithDetail,
   getExplorerTxUrl,
   getFaucetRequestExpiresAt,
   getFaucetRequestLockKey,
   getMinimumAllowedCreatedAt,
-  getOAuthStateCookieName,
-  getSuccessRedirect,
+  getRequestPageUrl,
   hashRefreshSecret,
   isRefreshSecretValid,
   reconcileBroadcastRequests,
   sendFrontendRedirect,
-  serializeFaucetRequest,
-  setOAuthStateCookie
+  serializeFaucetRequest
 } from "../appRuntime.js";
 import { models } from "../database/createConnection.js";
 import { isValidBitcoinAddress } from "../lib/bitcoin.js";
@@ -99,6 +95,95 @@ async function claimOAuthRequestState(
       oauthState: claimedState
     };
   });
+}
+
+async function createFaucetRequestFromOAuthState(oauthState: {
+  bitcoinAddress: string;
+  codeVerifier: string;
+}, authorizationCode: string) {
+  const accessToken = await exchangeCodeForToken(authorizationCode, oauthState.codeVerifier);
+  const xUser = await getXUserProfile(accessToken);
+  const createdAt = new Date(xUser.created_at);
+
+  if (Number.isNaN(createdAt.valueOf())) {
+    throw new Error("X account created_at was invalid");
+  }
+
+  if (createdAt > getMinimumAllowedCreatedAt()) {
+    console.error("X account too new:", xUser.username, xUser.created_at);
+    throw new Error("x_account_too_new");
+  }
+
+  const xUserIsVerified = isVerifiedXUser(xUser);
+
+  await clearExpiredFaucetRequests();
+
+  if (config.faucet.requireVerified && !xUserIsVerified) {
+    console.error("X account not verified:", xUser.username, xUser);
+    throw new Error("x_account_not_verified");
+  }
+
+  const refreshToken = createRefreshSecret();
+  const refreshSecretHash = hashRefreshSecret(refreshToken);
+  const createdRequest = await models.sequelize.transaction(async (transaction) => {
+    await models.sequelize.query(
+      "SELECT pg_advisory_xact_lock(hashtext(:lockKey))",
+      {
+        replacements: {
+          lockKey: getFaucetRequestLockKey(activeNetwork, xUser.id)
+        },
+        transaction
+      }
+    );
+
+    const existingRequest = config.faucet.multiplePerAccount
+      ? null
+      : await models.FaucetRequest.findOne({
+          where: config.faucet.allowRepeatPerAccount
+            ? {
+                network: activeNetwork,
+                xUserId: xUser.id,
+                status: "pending"
+              }
+            : {
+                network: activeNetwork,
+                xUserId: xUser.id
+              },
+          order: [["createdAt", "DESC"]],
+          transaction
+        });
+
+    if (existingRequest) {
+      throw new Error("request_already_pending");
+    }
+
+    return await models.FaucetRequest.create(
+      {
+        network: activeNetwork,
+        xUserId: xUser.id,
+        xUsername: xUser.username,
+        xName: xUser.name ?? null,
+        xCreatedAt: createdAt,
+        xVerified: xUserIsVerified,
+        bitcoinAddress: oauthState.bitcoinAddress,
+        amountSats: config.faucet.requestAmountSats,
+        status: "pending",
+        expiresAt: getFaucetRequestExpiresAt(),
+        refreshSecretHash,
+        rejectionReason: null
+      },
+      {
+        transaction
+      }
+    );
+  });
+
+  console.error("Created faucet request:", createdRequest.id, xUser.username);
+
+  return {
+    createdRequest,
+    refreshToken
+  };
 }
 
 export function registerFaucetRoutes(app: express.Router) {
@@ -228,21 +313,20 @@ export function registerFaucetRoutes(app: express.Router) {
 
   app.post("/faucet/request/start", async (request, response) => {
     const bitcoinAddress = String(request.body?.bitcoinAddress ?? "").trim();
-    const shouldRedirect = String(request.query.redirect ?? "").trim() === "1";
+    const sessionSecret = String(request.body?.sessionSecret ?? "").trim();
 
     if (!isValidBitcoinAddress(bitcoinAddress)) {
-      if (shouldRedirect) {
-        sendFrontendRedirect(response, getErrorRedirect("invalid_bitcoin_address"));
-        return;
-      }
-
       response.status(400).json({ error: "invalid_bitcoin_address" });
+      return;
+    }
+
+    if (sessionSecret.length < 32) {
+      response.status(400).json({ error: "invalid_oauth_session_secret" });
       return;
     }
 
     const { codeVerifier, codeChallenge } = createPkcePair();
     const state = createOAuthState();
-    const sessionSecret = createRefreshSecret();
 
     await models.OAuthRequestState.destroy({
       where: {
@@ -261,16 +345,9 @@ export function registerFaucetRoutes(app: express.Router) {
       expiresAt: new Date(Date.now() + 10 * 60 * 1000)
     });
 
-    setOAuthStateCookie(response, state, sessionSecret);
-    const authorizationUrl = buildXAuthorizationUrl(state, codeChallenge);
-
-    if (shouldRedirect) {
-      response.redirect(303, authorizationUrl);
-      return;
-    }
-
     response.json({
-      authorizationUrl
+      state,
+      authorizationUrl: buildXAuthorizationUrl(state, codeChallenge)
     });
   });
 
@@ -282,7 +359,11 @@ export function registerFaucetRoutes(app: express.Router) {
     if (oauthError) {
       console.error("X OAuth denied:", oauthError);
       if (state) {
-        clearOAuthStateCookie(response, state);
+        await models.OAuthRequestState.destroy({
+          where: {
+            state
+          }
+        });
       }
       sendFrontendRedirect(response, getErrorRedirect("x_oauth_denied"));
       return;
@@ -294,122 +375,92 @@ export function registerFaucetRoutes(app: express.Router) {
       return;
     }
 
-    const sessionSecret = getCookieValue(request, getOAuthStateCookieName(state));
-    const claimedOAuthState = await claimOAuthRequestState(state, sessionSecret);
-
-    if (claimedOAuthState.error) {
-      console.error("X OAuth callback rejected:", claimedOAuthState.error, state);
-      clearOAuthStateCookie(response, state);
-      sendFrontendRedirect(
-        response,
-        getErrorRedirect(claimedOAuthState.error)
-      );
-      return;
-    }
-
     try {
-      const accessToken = await exchangeCodeForToken(
-        code,
-        claimedOAuthState.oauthState.codeVerifier
-      );
-      const xUser = await getXUserProfile(accessToken);
-      const createdAt = new Date(xUser.created_at);
-
-      if (Number.isNaN(createdAt.valueOf())) {
-        throw new Error("X account created_at was invalid");
-      }
-
-      if (createdAt > getMinimumAllowedCreatedAt()) {
-        console.error("X account too new:", xUser.username, xUser.created_at);
-        clearOAuthStateCookie(response, state);
-        sendFrontendRedirect(response, getErrorRedirect("x_account_too_new"));
-        return;
-      }
-
-      const xUserIsVerified = isVerifiedXUser(xUser);
-
-      await clearExpiredFaucetRequests();
-
-      if (config.faucet.requireVerified && !xUserIsVerified) {
-        console.error("X account not verified:", xUser.username, xUser);
-        clearOAuthStateCookie(response, state);
-        sendFrontendRedirect(response, getErrorRedirect("x_account_not_verified"));
-        return;
-      }
-      const refreshToken = createRefreshSecret();
-      const refreshSecretHash = hashRefreshSecret(refreshToken);
-      const createdRequest = await models.sequelize.transaction(async (transaction) => {
-        await models.sequelize.query(
-          "SELECT pg_advisory_xact_lock(hashtext(:lockKey))",
-          {
-            replacements: {
-              lockKey: getFaucetRequestLockKey(activeNetwork, xUser.id)
-            },
-            transaction
+      const oauthState = await models.OAuthRequestState.findOne({
+        where: {
+          state,
+          expiresAt: {
+            [Op.gt]: new Date()
           }
-        );
-
-        const existingRequest = config.faucet.multiplePerAccount
-          ? null
-          : await models.FaucetRequest.findOne({
-              where: config.faucet.allowRepeatPerAccount
-                ? {
-                    network: activeNetwork,
-                    xUserId: xUser.id,
-                    status: "pending"
-                  }
-                : {
-                    network: activeNetwork,
-                    xUserId: xUser.id
-                  },
-              order: [["createdAt", "DESC"]],
-              transaction
-            });
-
-        if (existingRequest) {
-          throw new Error("request_already_pending");
         }
-
-        return models.FaucetRequest.create(
-          {
-            network: activeNetwork,
-            xUserId: xUser.id,
-            xUsername: xUser.username,
-            xName: xUser.name ?? null,
-            xCreatedAt: createdAt,
-            xVerified: xUserIsVerified,
-            bitcoinAddress: claimedOAuthState.oauthState.bitcoinAddress,
-            amountSats: config.faucet.requestAmountSats,
-            status: "pending",
-            expiresAt: getFaucetRequestExpiresAt(),
-            refreshSecretHash,
-            rejectionReason: null
-          },
-          {
-            transaction
-          }
-        );
       });
 
-      clearOAuthStateCookie(response, state);
-
-      console.error("Created faucet request:", createdRequest.id, xUser.username);
-      sendFrontendRedirect(response, getSuccessRedirect(createdRequest.id, refreshToken));
-    } catch (error) {
-      console.error(error);
-      clearOAuthStateCookie(response, state);
-      const detail =
-        error instanceof Error ? error.message : "Unknown OAuth callback error";
-
-      if (detail === "request_already_pending") {
-        sendFrontendRedirect(response, getErrorRedirect("request_already_pending"));
+      if (!oauthState) {
+        console.error("X OAuth callback rejected: x_oauth_state_missing", state);
+        sendFrontendRedirect(response, getErrorRedirect("x_oauth_state_missing"));
         return;
       }
+
+      const redirectUrl = new URL(getRequestPageUrl());
+      redirectUrl.hash = new URLSearchParams({
+        oauthState: state,
+        oauthCode: code,
+        oauthStatus: "ready"
+      }).toString();
+
+      sendFrontendRedirect(
+        response,
+        redirectUrl.toString()
+      );
+    } catch (error) {
+      console.error(error);
+      const detail =
+        error instanceof Error ? error.message : "Unknown OAuth callback error";
 
       sendFrontendRedirect(
         response,
         getErrorRedirectWithDetail("x_oauth_request_failed", detail)
       );
+    }
+  });
+
+  app.post("/faucet/request/complete", async (request, response) => {
+    const state = String(request.body?.state ?? "").trim();
+    const code = String(request.body?.code ?? "").trim();
+    const sessionSecret = String(request.body?.sessionSecret ?? "").trim();
+
+    if (!state || !sessionSecret || !code) {
+      response.status(400).json({ error: "x_oauth_invalid_callback" });
+      return;
+    }
+
+    const claimedOAuthState = await claimOAuthRequestState(state, sessionSecret);
+
+    if (claimedOAuthState.error) {
+      console.error("X OAuth callback rejected:", claimedOAuthState.error, state);
+      response.status(403).json({ error: claimedOAuthState.error });
+      return;
+    }
+
+    try {
+      const { createdRequest, refreshToken } = await createFaucetRequestFromOAuthState(
+        claimedOAuthState.oauthState,
+        code
+      );
+
+      response.json({
+        ok: true,
+        requestId: createdRequest.id,
+        refreshToken
+      });
+    } catch (error) {
+      console.error(error);
+      const detail =
+        error instanceof Error ? error.message : "Unknown OAuth completion error";
+
+      if (
+        detail === "request_already_pending" ||
+        detail === "x_account_too_new" ||
+        detail === "x_account_not_verified"
+      ) {
+        response.status(403).json({ error: detail });
+        return;
+      }
+
+      response.status(502).json({
+        error: "x_oauth_request_failed",
+        errorDetail: detail
+      });
     }
   });
 
