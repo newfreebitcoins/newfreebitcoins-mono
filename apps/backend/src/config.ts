@@ -53,7 +53,9 @@ const donationsSchema = z.object({
   feeRateSatPerVbyte: z.number().positive().default(2),
   minAcceptedSatsVByte: z.number().positive().default(2),
   broadcastRecoveryMs: z.number().int().positive().default(10 * 60 * 1000),
-  minimumGraffitiBtc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).default("0.00100000")
+  minimumGraffitiBtc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).default("0.00100000"),
+  minimumReputationNeeded: z.number().int().default(-25),
+  minSatsForHeartbeat: z.number().int().nonnegative().default(1000)
 });
 
 const electrsServerSchema = z.object({
@@ -113,7 +115,9 @@ const normalizedConfigSchema = z.object({
     feeRateSatPerVbyte: 2,
     minAcceptedSatsVByte: 2,
     broadcastRecoveryMs: 10 * 60 * 1000,
-    minimumGraffitiBtc: "0.00100000"
+    minimumGraffitiBtc: "0.00100000",
+    minimumReputationNeeded: -25,
+    minSatsForHeartbeat: 1000
   }),
   xOAuth: xOAuthSchema
 });
@@ -147,6 +151,8 @@ const legacyConfigSchema = z.object({
   donations_min_accepted_sats_vbyte: z.number().positive().optional(),
   donations_broadcast_recovery_ms: z.number().int().positive().optional(),
   donations_minimum_graffiti_btc: z.string().regex(/^\d+(?:\.\d{1,8})?$/).optional(),
+  donations_minimum_reputation_needed: z.number().int().optional(),
+  donations_min_sats_for_heartbeat: z.number().int().nonnegative().optional(),
   electrum_mainnet_host: z.string().optional(),
   electrum_mainnet_port: z.number().int().positive().optional(),
   electrum_mainnet_protocol: z.enum(["tcp", "tls"]).optional(),
@@ -247,7 +253,11 @@ function normalizeConfig(parsed: unknown): AppConfig {
       broadcastRecoveryMs:
         legacy.donations_broadcast_recovery_ms ?? 10 * 60 * 1000,
       minimumGraffitiBtc:
-        legacy.donations_minimum_graffiti_btc ?? "0.00100000"
+        legacy.donations_minimum_graffiti_btc ?? "0.00100000",
+      minimumReputationNeeded:
+        legacy.donations_minimum_reputation_needed ?? -25,
+      minSatsForHeartbeat:
+        legacy.donations_min_sats_for_heartbeat ?? 1000
     },
     xOAuth: {
       apiKey: legacy.x_api_key,

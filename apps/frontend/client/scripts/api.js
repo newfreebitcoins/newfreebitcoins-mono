@@ -351,6 +351,13 @@ export async function getWalletActivity(address, limit = 15) {
   return getJson(url.toString());
 }
 
+export async function getDonorStatus(address) {
+  const url = new URL(`${BACKEND_ENDPOINT}/api/donations/donor-status`);
+  url.searchParams.set("address", address);
+
+  return getJson(url.toString());
+}
+
 export async function reserveDonationRequests(donorAddress, maxRequests) {
   return postJson(`${BACKEND_ENDPOINT}/api/donations/reserve-requests`, {
     donorAddress,

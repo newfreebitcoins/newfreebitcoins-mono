@@ -10,6 +10,7 @@ import * as bitcoin from "bitcoinjs-lib";
 import QRCode from "qrcode";
 import {
   getDonationChallenge,
+  getDonorStatus,
   getRuntimeConfig,
   getTransactionStatus,
   getWalletActivity,
@@ -43,6 +44,7 @@ let pendingWalletMode = "create";
 let confirmationIndexes = [];
 let confirmationStep = "password";
 let unlockedWalletState = null;
+let donorStatusState = null;
 let donationRuntimeState = {
   enabled: false,
   cycleTimeoutId: null,
@@ -646,7 +648,7 @@ function renderExecutionStatus(text, isRunning = false) {
   }
 
   if (startButton) {
-    startButton.disabled = isRunning;
+    startButton.disabled = isRunning || Boolean(getDonorStatusMessage(donorStatusState));
   }
 
   if (stopButton) {
@@ -701,6 +703,75 @@ async function updateWalletBalance(address) {
   balanceNode.textContent =
     formatSatsAsCoins(confirmed) +
     (unconfirmed ? ` (${formatSatsAsCoins(unconfirmed)} unconfirmed)` : "");
+}
+
+function getDonorStatusMessage(status) {
+  if (!status) {
+    return "";
+  }
+
+  if (status.isBlacklisted) {
+    return `This donor is blacklisted at reputation ${status.minimumReputationNeeded}.`;
+  }
+
+  if (
+    Number(status.confirmedBalanceSats ?? 0) <
+    Number(status.minSatsForHeartbeat ?? 0)
+  ) {
+    return `At least ${formatSatsAsCoins(status.minSatsForHeartbeat ?? 0)} confirmed ${getCoinLabel()} is required to heartbeat.`;
+  }
+
+  return "";
+}
+
+function renderDonorStatus(status) {
+  donorStatusState = status ?? null;
+  const reputationNode = $("[data-donor-reputation]");
+  const startButton = $("[data-start-donations]");
+
+  if (reputationNode) {
+    reputationNode.textContent =
+      status == null ? "Unknown" : String(status.reputation ?? 0);
+  }
+
+  if (startButton && !donationRuntimeState.enabled) {
+    startButton.disabled = Boolean(getDonorStatusMessage(status));
+  }
+}
+
+function getMaxReservableRequestsFromStatus(status = donorStatusState) {
+  const requestAmountSats = Number(appConfig?.faucet?.requestAmountSats ?? 0);
+  const availableReserveCapacitySats = Number(
+    status?.availableReserveCapacitySats ?? 0
+  );
+
+  if (requestAmountSats <= 0 || availableReserveCapacitySats <= 0) {
+    return 0;
+  }
+
+  return Math.max(
+    Math.floor(availableReserveCapacitySats / requestAmountSats),
+    0
+  );
+}
+
+async function updateDonorStatus(address) {
+  const result = await getDonorStatus(address);
+
+  if (!result.ok) {
+    renderDonorStatus(null);
+    return {
+      ok: false,
+      error: result.error
+    };
+  }
+
+  renderDonorStatus(result.data ?? null);
+
+  return {
+    ok: true,
+    data: result.data ?? null
+  };
 }
 
 function setWalletActivityPagination(page, totalPages) {
@@ -822,7 +893,8 @@ async function refetchWalletData({ followUpMs = 0 } = {}) {
 
   await Promise.all([
     updateWalletBalance(unlockedWalletState.address),
-    renderWalletActivity(unlockedWalletState.address)
+    renderWalletActivity(unlockedWalletState.address),
+    updateDonorStatus(unlockedWalletState.address)
   ]);
 
   clearWalletDataRefetchTimeout();
@@ -835,7 +907,8 @@ async function refetchWalletData({ followUpMs = 0 } = {}) {
 
       void Promise.all([
         updateWalletBalance(unlockedWalletState.address),
-        renderWalletActivity(unlockedWalletState.address)
+        renderWalletActivity(unlockedWalletState.address),
+        updateDonorStatus(unlockedWalletState.address)
       ]);
     }, followUpMs);
   }
@@ -1051,6 +1124,7 @@ function clearUnlockedWalletRuntime() {
   clearScheduledCycle();
   clearWalletAutoRefresh();
   unlockedWalletState = null;
+  donorStatusState = null;
   donationRuntimeState = {
     enabled: false,
     cycleTimeoutId: null,
@@ -1068,6 +1142,14 @@ function estimateFee(inputCount, outputCount, feeRateSatPerVbyte) {
 async function maybeHeartbeat() {
   if (!unlockedWalletState || !donationRuntimeState.enabled) {
     return true;
+  }
+
+  const donorStatusMessage = getDonorStatusMessage(donorStatusState);
+
+  if (donorStatusMessage) {
+    setMessage(donorStatusMessage, "error");
+    stopDonationLoop();
+    return false;
   }
 
   const heartbeatIntervalMs =
@@ -1099,8 +1181,25 @@ async function maybeHeartbeat() {
   });
 
   if (!heartbeatResult.ok) {
-    setMessage("Unable to prove donation wallet activity right now.", "error");
+    const donorStatusResult = await updateDonorStatus(unlockedWalletState.address);
+    const nextStatusMessage = donorStatusResult.ok
+      ? getDonorStatusMessage(donorStatusResult.data)
+      : "";
+
+    setMessage(
+      nextStatusMessage || "Unable to prove donation wallet activity right now.",
+      "error"
+    );
+
+    if (nextStatusMessage) {
+      stopDonationLoop();
+    }
+
     return false;
+  }
+
+  if (heartbeatResult.data?.donor) {
+    renderDonorStatus(heartbeatResult.data.donor);
   }
 
   donationRuntimeState.lastHeartbeatAt = Date.now();
@@ -1358,6 +1457,22 @@ async function runDonationExecutionCycle() {
   donationRuntimeState.cycleInFlight = true;
 
   try {
+    const donorStatusResult = await updateDonorStatus(unlockedWalletState.address);
+
+    if (!donorStatusResult.ok) {
+      setMessage("Unable to refresh donor reputation right now.", "error");
+      renderExecutionStatus("Donation wallet is running...", true);
+      return;
+    }
+
+    const donorStatusMessage = getDonorStatusMessage(donorStatusResult.data);
+
+    if (donorStatusMessage) {
+      setMessage(donorStatusMessage, "error");
+      stopDonationLoop();
+      return;
+    }
+
     const heartbeatOk = await maybeHeartbeat();
 
     if (!heartbeatOk || shouldAbortExecutionCycle()) {
@@ -1393,15 +1508,46 @@ async function runDonationExecutionCycle() {
       await refetchWalletData({ followUpMs: SEND_REFETCH_DELAY_MS });
     }
 
+    const maxReservableRequests = getMaxReservableRequestsFromStatus(donorStatusState);
+    const requestedMaxRequests = getMaxRequestsPerTx();
+    const reserveRequestCount = Math.min(requestedMaxRequests, maxReservableRequests);
+
+    if (reserveRequestCount <= 0) {
+      renderExecutionStatus(
+        "Donation wallet is running... waiting for more confirmed balance.",
+        true
+      );
+      return;
+    }
+
     const reserveResult = await reserveDonationRequests(
       unlockedWalletState.address,
-      getMaxRequestsPerTx()
+      reserveRequestCount
     );
 
     if (!reserveResult.ok) {
-      setMessage("Unable to reserve faucet requests right now.", "error");
+      const nextStatusResult = await updateDonorStatus(unlockedWalletState.address);
+      const nextStatusMessage = nextStatusResult.ok
+        ? getDonorStatusMessage(nextStatusResult.data)
+        : "";
+      const reserveMessage =
+        reserveResult.error === "donor_promised_balance_exceeded"
+          ? "This wallet cannot reserve that many requests with its current confirmed balance."
+          : nextStatusMessage || "Unable to reserve faucet requests right now.";
+
+      setMessage(reserveMessage, "error");
+
+      if (nextStatusMessage) {
+        stopDonationLoop();
+        return;
+      }
+
       renderExecutionStatus("Donation wallet is running...", true);
       return;
+    }
+
+    if (reserveResult.data?.donor) {
+      renderDonorStatus(reserveResult.data.donor);
     }
 
     if (shouldAbortExecutionCycle()) {
@@ -1552,6 +1698,7 @@ async function renderUnlockedWallet(addressOverride) {
   setFeeRateEditing(false);
   setGraffitiEditing(false);
   updateGraffitiThresholdNote();
+  renderDonorStatus(null);
   renderExecutionStatus("Donation wallet is stopped.", false);
 
   await refetchWalletData();
@@ -1566,7 +1713,7 @@ async function renderUnlockedWallet(addressOverride) {
     void refetchWalletData();
   }, WALLET_AUTO_REFRESH_MS);
 
-  setMessage("", "");
+  setMessage(getDonorStatusMessage(donorStatusState), getDonorStatusMessage(donorStatusState) ? "error" : "");
   showSection("wallet");
 
   if (getCurrentHash() !== DONATE_HASHES.donationWallet) {

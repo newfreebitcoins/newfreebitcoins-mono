@@ -109,10 +109,18 @@ struct DecryptedWallet {
 struct ConfigResponse {
     network: String,
     unitLabel: String,
+    faucet: FaucetConfig,
     donations: DonationsConfig,
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(non_snake_case)]
+struct FaucetConfig {
+    requestAmountSats: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 #[allow(non_snake_case)]
 struct DonationsConfig {
     heartbeatPollMs: u64,
@@ -120,6 +128,8 @@ struct DonationsConfig {
     #[serde(default = "default_execution_poll_ms")]
     executionPollMs: u64,
     minimumGraffitiBtc: String,
+    minimumReputationNeeded: i64,
+    minSatsForHeartbeat: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,6 +158,8 @@ struct ChallengeResponse {
 
 #[derive(Debug, Deserialize)]
 struct ReserveRequestsResponse {
+    #[allow(dead_code)]
+    donor: Option<DonorStatusResponse>,
     requests: Vec<ReservedRequest>,
 }
 
@@ -173,6 +185,23 @@ struct TxStatusResponse {
 struct SendTransactionResponse {
     txid: String,
     explorerUrl: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+#[allow(non_snake_case)]
+struct DonorStatusResponse {
+    reputation: i64,
+    minimumReputationNeeded: i64,
+    isBlacklisted: bool,
+    confirmedBalanceSats: u64,
+    unconfirmedBalanceSats: u64,
+    availableReserveCapacitySats: u64,
+    minSatsForHeartbeat: u64,
+    canHeartbeat: bool,
+    canReserve: bool,
+    heartbeatRejectionReason: Option<String>,
+    reserveRejectionReason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -317,6 +346,33 @@ fn normalize_graffiti(value: &str) -> Result<String> {
 
 fn format_sats_as_btc(sats: u64, unit_label: &str) -> String {
     format!("{:.8} {}", sats as f64 / 100_000_000.0, unit_label)
+}
+
+fn donor_status_message(status: &DonorStatusResponse, unit_label: &str) -> Option<String> {
+    if status.isBlacklisted {
+        return Some(format!(
+            "This donor is blacklisted at reputation {}.",
+            status.minimumReputationNeeded
+        ));
+    }
+
+    if status.confirmedBalanceSats < status.minSatsForHeartbeat {
+        return Some(format!(
+            "At least {} confirmed {} is required to heartbeat.",
+            format!("{:.8}", status.minSatsForHeartbeat as f64 / 100_000_000.0),
+            unit_label
+        ));
+    }
+
+    None
+}
+
+fn max_reservable_request_count(status: &DonorStatusResponse, request_amount_sats: u64) -> usize {
+    if request_amount_sats == 0 {
+        return 0;
+    }
+
+    (status.availableReserveCapacitySats / request_amount_sats) as usize
 }
 
 fn parse_btc_amount_to_sats(value: &str) -> Result<u64> {
@@ -863,6 +919,14 @@ async fn post_json<T: DeserializeOwned, P: Serialize>(
     Ok(response.json::<T>().await.context("Invalid JSON response")?)
 }
 
+async fn fetch_donor_status(client: &Client, backend: &str, address: &str) -> Result<DonorStatusResponse> {
+    get_json(
+        client,
+        &format!("{backend}/api/donations/donor-status?address={address}"),
+    )
+    .await
+}
+
 fn address_string(address: &str, network: Network) -> Result<Address> {
     let unchecked = Address::<NetworkUnchecked>::from_str(address)
         .context("Invalid Bitcoin address")?;
@@ -1040,32 +1104,6 @@ async fn run_start_loop(
 
     loop {
         let cycle_result: Result<()> = async {
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("System time is invalid")?
-                .as_millis();
-
-            if now.saturating_sub(last_heartbeat_at) >= config.donations.heartbeatPollMs as u128 {
-                let challenge: ChallengeResponse =
-                    get_json(client, &format!("{backend}/api/donations/challenge")).await?;
-                let challenge_hex = challenge.challenge;
-                let digest = heartbeat_message_digest(&challenge_hex, graffiti);
-                let message = Message::from_digest_slice(&digest)?;
-                let signature: Signature = secp.sign_ecdsa(&message, &private_key.inner);
-                let payload = HeartbeatRequest {
-                    address: &wallet.address,
-                    publicKeyHex: hex::encode(public_key.to_bytes()),
-                    challenge: &challenge_hex,
-                    signatureHex: hex::encode(signature.serialize_compact()),
-                    graffiti,
-                };
-                let _: serde_json::Value =
-                    post_json(client, &format!("{backend}/api/donations/heartbeat"), &payload)
-                        .await?;
-                last_heartbeat_at = now;
-                print_status("heartbeat", &format!("Accepted for {}", wallet.address));
-            }
-
             if let Some(txid) = pending_txid.clone() {
                 let status: TxStatusResponse = get_json(
                     client,
@@ -1093,9 +1131,59 @@ async fn run_start_loop(
                 }
             }
 
+            let donor_status = fetch_donor_status(client, backend, &wallet.address).await?;
+            if let Some(message) = donor_status_message(&donor_status, &config.unitLabel) {
+                print_status("blocked", &message);
+                return Ok(());
+            }
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .context("System time is invalid")?
+                .as_millis();
+
+            if now.saturating_sub(last_heartbeat_at) >= config.donations.heartbeatPollMs as u128 {
+                let challenge: ChallengeResponse =
+                    get_json(client, &format!("{backend}/api/donations/challenge")).await?;
+                let challenge_hex = challenge.challenge;
+                let digest = heartbeat_message_digest(&challenge_hex, graffiti);
+                let message = Message::from_digest_slice(&digest)?;
+                let signature: Signature = secp.sign_ecdsa(&message, &private_key.inner);
+                let payload = HeartbeatRequest {
+                    address: &wallet.address,
+                    publicKeyHex: hex::encode(public_key.to_bytes()),
+                    challenge: &challenge_hex,
+                    signatureHex: hex::encode(signature.serialize_compact()),
+                    graffiti,
+                };
+                let _: serde_json::Value =
+                    post_json(client, &format!("{backend}/api/donations/heartbeat"), &payload)
+                        .await?;
+                last_heartbeat_at = now;
+                print_status(
+                    "heartbeat",
+                    &format!(
+                        "Accepted for {} (reputation {})",
+                        wallet.address, donor_status.reputation
+                    ),
+                );
+            }
+
+            let max_reservable = max_reservable_request_count(
+                &donor_status,
+                config.faucet.requestAmountSats,
+            );
+
+            if max_reservable == 0 || !donor_status.canReserve {
+                print_status("queue", "Waiting for more confirmed balance before reserving.");
+                return Ok(());
+            }
+
+            let reserve_limit = max_requests.min(max_reservable);
+
             let reserve_payload = ReserveRequest {
                 donorAddress: &wallet.address,
-                maxRequests: max_requests,
+                maxRequests: reserve_limit,
             };
             let reserve: ReserveRequestsResponse = post_json(
                 client,
@@ -1211,6 +1299,7 @@ async fn main() -> Result<()> {
                 cli.password.as_deref(),
                 backend_network,
             )?;
+            let donor_status = fetch_donor_status(&client, &cli.backend, &wallet.address).await?;
             let (configured_max_requests, configured_fee_rate_sat_per_vbyte, configured_graffiti) =
                 load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
 
@@ -1219,6 +1308,7 @@ async fn main() -> Result<()> {
             print_kv("Backend", &cli.backend);
             print_kv("Network", &config.network);
             print_kv("Address", &wallet.address);
+            print_kv("Reputation", &donor_status.reputation.to_string());
             println!();
 
             let max_requests = max_requests.unwrap_or(configured_max_requests);
@@ -1284,9 +1374,11 @@ async fn main() -> Result<()> {
                 &format!("{}/api/wallet/balance?address={}", cli.backend, wallet.address),
             )
             .await?;
+            let donor_status = fetch_donor_status(&client, &cli.backend, &wallet.address).await?;
             print_section("Wallet Balance");
             print_kv("Confirmed", &format_sats_as_btc(balance.confirmed.max(0) as u64, &config.unitLabel));
             print_kv("Unconfirmed", &format_sats_as_btc(balance.unconfirmed.unsigned_abs(), &config.unitLabel));
+            print_kv("Reputation", &donor_status.reputation.to_string());
         }
         Commands::Activity { limit } => {
             let config: ConfigResponse =
@@ -1303,6 +1395,8 @@ async fn main() -> Result<()> {
             print_kv("Backend", &cli.backend);
             print_kv("Network", &config.network);
             print_kv("Address", &wallet.address);
+            let donor_status = fetch_donor_status(&client, &cli.backend, &wallet.address).await?;
+            print_kv("Reputation", &donor_status.reputation.to_string());
             println!();
 
             let activity: ActivityResponse = get_json(

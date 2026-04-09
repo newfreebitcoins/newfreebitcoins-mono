@@ -52,6 +52,14 @@ function normalizeDonationGraffiti(value: string): string {
   return normalized;
 }
 
+export type ValidDonationHeartbeat = {
+  address: string;
+  publicKeyHex: string;
+  graffiti: string;
+  balanceSats?: number;
+  unconfirmedBalanceSats?: number;
+};
+
 function getHeartbeatMessageHash(challengeHex: string, graffiti: string): Uint8Array {
   return crypto
     .createHash("sha256")
@@ -190,13 +198,13 @@ export function getActiveDonationWalletsPage(page: number, pageSize: number) {
   };
 }
 
-export function verifyDonationHeartbeat(input: {
+export function validateDonationHeartbeat(input: {
   address: string;
   publicKeyHex: string;
   challenge: string;
   signatureHex: string;
   graffiti?: string;
-}) {
+}): ValidDonationHeartbeat {
   pruneInactiveWallets();
   const graffiti = normalizeDonationGraffiti(input.graffiti ?? "");
 
@@ -222,15 +230,25 @@ export function verifyDonationHeartbeat(input: {
     throw new Error("invalid_donation_signature");
   }
 
+  return {
+    address: input.address,
+    publicKeyHex: input.publicKeyHex,
+    graffiti
+  };
+}
+
+export function recordDonationHeartbeat(input: ValidDonationHeartbeat) {
   const existing = activeWallets.get(input.address);
 
   activeWallets.set(input.address, {
     address: input.address,
     publicKeyHex: input.publicKeyHex,
     lastHeartbeatAt: Date.now(),
-    balanceSats: existing?.balanceSats ?? 0,
-    unconfirmedBalanceSats: existing?.unconfirmedBalanceSats ?? 0,
-    graffiti
+    balanceSats: Number(input.balanceSats ?? existing?.balanceSats ?? 0),
+    unconfirmedBalanceSats: Number(
+      input.unconfirmedBalanceSats ?? existing?.unconfirmedBalanceSats ?? 0
+    ),
+    graffiti: input.graffiti
   });
 
   return getDonationBalanceCache();
