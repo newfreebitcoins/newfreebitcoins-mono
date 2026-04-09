@@ -451,7 +451,6 @@ export function getConfigPayload() {
       minAcceptedSatsVByte: config.donations.minAcceptedSatsVByte,
       broadcastRecoveryMs: config.donations.broadcastRecoveryMs,
       minimumGraffitiBtc: config.donations.minimumGraffitiBtc,
-      includeGraffitiInOpReturn: config.donations.includeGraffitiInOpReturn,
       minimumReputationNeeded: config.donations.minimumReputationNeeded,
       minSatsForHeartbeat: config.donations.minSatsForHeartbeat
     }

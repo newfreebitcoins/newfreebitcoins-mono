@@ -96,6 +96,8 @@ struct StoredWallet {
     fee_rate_sat_per_vbyte: f64,
     #[serde(default)]
     graffiti: String,
+    #[serde(default = "default_include_graffiti_in_op_return")]
+    include_graffiti_in_op_return: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -129,8 +131,6 @@ struct DonationsConfig {
     #[serde(default = "default_execution_poll_ms")]
     executionPollMs: u64,
     minimumGraffitiBtc: String,
-    #[serde(default)]
-    includeGraffitiInOpReturn: bool,
     minimumReputationNeeded: i64,
     minSatsForHeartbeat: u64,
 }
@@ -333,6 +333,10 @@ fn default_fee_rate_sat_per_vbyte() -> f64 {
     2.0
 }
 
+fn default_include_graffiti_in_op_return() -> bool {
+    false
+}
+
 fn default_execution_poll_ms() -> u64 {
     DEFAULT_EXECUTION_POLL_MS
 }
@@ -417,6 +421,7 @@ fn graffiti_op_return_script(
     config: &ConfigResponse,
     donor_status: &DonorStatusResponse,
     graffiti: &str,
+    include_graffiti_in_op_return: bool,
 ) -> Result<Option<ScriptBuf>> {
     let trimmed = graffiti.trim();
 
@@ -430,9 +435,7 @@ fn graffiti_op_return_script(
 
     let minimum_graffiti_sats = parse_btc_amount_to_sats(&config.donations.minimumGraffitiBtc)?;
 
-    if !config.donations.includeGraffitiInOpReturn
-        && donor_status.confirmedBalanceSats < minimum_graffiti_sats
-    {
+    if !include_graffiti_in_op_return && donor_status.confirmedBalanceSats < minimum_graffiti_sats {
         return Ok(None);
     }
 
@@ -622,6 +625,22 @@ fn prompt_string_with_default(prompt: &str, default: &str) -> Result<String> {
     Ok(answer.trim().to_string())
 }
 
+fn prompt_bool_with_default(prompt: &str, default: bool) -> Result<bool> {
+    let default_label = if default { "y" } else { "n" };
+    let answer = prompt_line(&format!("{prompt} [y/n, default {default_label}]: "))?;
+    let trimmed = answer.trim().to_ascii_lowercase();
+
+    if trimmed.is_empty() {
+        return Ok(default);
+    }
+
+    match trimmed.as_str() {
+        "y" | "yes" | "true" | "1" => Ok(true),
+        "n" | "no" | "false" | "0" => Ok(false),
+        _ => bail!("Please answer y or n."),
+    }
+}
+
 fn prompt_password_value(prompt: &str) -> Result<String> {
     rpassword::prompt_password(prompt).context("Unable to read password input")
 }
@@ -702,6 +721,9 @@ fn build_stored_wallet(
         graffiti: template
             .map(|stored| stored.graffiti.clone())
             .unwrap_or_default(),
+        include_graffiti_in_op_return: template
+            .map(|stored| stored.include_graffiti_in_op_return)
+            .unwrap_or_else(default_include_graffiti_in_op_return),
     })
 }
 
@@ -859,12 +881,16 @@ fn load_or_create_wallet(
     Ok(DecryptedWallet { mnemonic, address, network: backend_network })
 }
 
-fn load_wallet_settings(data_dir: Option<&PathBuf>, backend_network: Network) -> Result<(usize, f64, String)> {
+fn load_wallet_settings(
+    data_dir: Option<&PathBuf>,
+    backend_network: Network,
+) -> Result<(usize, f64, String, bool)> {
     let stored = load_stored_wallet(data_dir, backend_network)?;
     Ok((
         stored.max_requests_per_tx,
         stored.fee_rate_sat_per_vbyte,
         stored.graffiti,
+        stored.include_graffiti_in_op_return,
     ))
 }
 
@@ -888,6 +914,10 @@ fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Resul
             &stored.graffiti
         }
     );
+    print_kv(
+        "Include Graffiti In OP_RETURN",
+        if stored.include_graffiti_in_op_return { "Yes" } else { "No" }
+    );
     println!();
     print_section("Update Settings");
     stored.max_requests_per_tx = prompt_usize_with_default(
@@ -906,6 +936,10 @@ fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Resul
         "Graffiti",
         &stored.graffiti,
     )?)?;
+    stored.include_graffiti_in_op_return = prompt_bool_with_default(
+        "Include graffiti in OP_RETURN for faucet fulfillment transactions",
+        stored.include_graffiti_in_op_return,
+    )?;
     write_stored_wallet_to_path(&source_path, &stored)?;
     println!();
     print_success("Wallet settings saved.");
@@ -918,6 +952,10 @@ fn run_config_tui(data_dir: Option<&PathBuf>, backend_network: Network) -> Resul
         } else {
             &stored.graffiti
         }
+    );
+    print_kv(
+        "Include Graffiti In OP_RETURN",
+        if stored.include_graffiti_in_op_return { "Yes" } else { "No" }
     );
     Ok(())
 }
@@ -1150,6 +1188,7 @@ async fn run_start_loop(
     max_requests: usize,
     fee_rate_sat_per_vbyte: f64,
     graffiti: &str,
+    include_graffiti_in_op_return: bool,
 ) -> Result<()> {
     let secp = Secp256k1::new();
     let (_address, _path, private_key, public_key) =
@@ -1269,7 +1308,12 @@ async fn run_start_loop(
                 })
                 .collect::<Result<Vec<_>>>()?;
             let op_return_script =
-                graffiti_op_return_script(config, &donor_status, graffiti)?;
+                graffiti_op_return_script(
+                    config,
+                    &donor_status,
+                    graffiti,
+                    include_graffiti_in_op_return,
+                )?;
 
             let raw_tx = build_tx(
                 wallet,
@@ -1358,7 +1402,12 @@ async fn main() -> Result<()> {
                 backend_network,
             )?;
             let donor_status = fetch_donor_status(&client, &cli.backend, &wallet.address).await?;
-            let (configured_max_requests, configured_fee_rate_sat_per_vbyte, configured_graffiti) =
+            let (
+                configured_max_requests,
+                configured_fee_rate_sat_per_vbyte,
+                configured_graffiti,
+                configured_include_graffiti_in_op_return,
+            ) =
                 load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
 
             clear_screen()?;
@@ -1400,7 +1449,7 @@ async fn main() -> Result<()> {
             );
             print_kv(
                 "Graffiti OP_RETURN",
-                if config.donations.includeGraffitiInOpReturn {
+                if configured_include_graffiti_in_op_return {
                     "Always include when graffiti is set"
                 } else {
                     "Only above graffiti minimum"
@@ -1414,7 +1463,8 @@ async fn main() -> Result<()> {
                 &wallet,
                 max_requests,
                 configured_fee_rate_sat_per_vbyte,
-                &graffiti
+                &graffiti,
+                configured_include_graffiti_in_op_return,
             )
             .await?;
         }
@@ -1504,7 +1554,12 @@ async fn main() -> Result<()> {
                 cli.password.as_deref(),
                 backend_network,
             )?;
-            let (_configured_max_requests, configured_fee_rate_sat_per_vbyte, _configured_graffiti) =
+            let (
+                _configured_max_requests,
+                configured_fee_rate_sat_per_vbyte,
+                _configured_graffiti,
+                _configured_include_graffiti_in_op_return,
+            ) =
                 load_wallet_settings(cli.data_dir.as_ref(), backend_network)?;
 
             clear_screen()?;

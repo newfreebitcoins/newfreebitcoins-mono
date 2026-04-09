@@ -19449,7 +19449,7 @@ function getGraffitiOpReturnBuffer() {
     String(appConfig?.donations?.minimumGraffitiBtc ?? "0")
   );
   const confirmedBalanceSats = Number(donorStatusState?.confirmedBalanceSats ?? 0);
-  if (!appConfig?.donations?.includeGraffitiInOpReturn && confirmedBalanceSats < Number(minimumGraffitiSats ?? 0)) {
+  if (!Boolean(getStoredWallet()?.includeGraffitiInOpReturn) && confirmedBalanceSats < Number(minimumGraffitiSats ?? 0)) {
     return null;
   }
   return import_buffer.Buffer.from(graffiti, "ascii");
@@ -19533,6 +19533,12 @@ function setGraffitiInputValue(value2) {
   const input = $("[data-graffiti-input]");
   if (input) {
     input.value = String(value2 ?? "").trim();
+  }
+}
+function setIncludeGraffitiOpReturnValue(value2) {
+  const input = $("[data-include-graffiti-opreturn]");
+  if (input) {
+    input.checked = Boolean(value2);
   }
 }
 function setSendAmountInputValueFromSats(sats) {
@@ -19677,7 +19683,7 @@ function renderExecutionStatus(text, isRunning = false) {
 function updateGraffitiThresholdNote() {
   const node = $("[data-graffiti-threshold]");
   const minimumGraffitiBtc = String(appConfig?.donations?.minimumGraffitiBtc ?? "").trim();
-  const forceInclude = Boolean(appConfig?.donations?.includeGraffitiInOpReturn);
+  const forceInclude = Boolean(getStoredWallet()?.includeGraffitiInOpReturn);
   if (node) {
     if (forceInclude) {
       node.textContent = minimumGraffitiBtc ? `${minimumGraffitiBtc} ${getCoinLabel()} (OP_RETURN inclusion forced on)` : "the configured minimum (OP_RETURN inclusion forced on)";
@@ -20436,6 +20442,7 @@ async function saveWalletFromPendingMnemonic() {
     maxRequestsPerTx: 1,
     feeRateSatPerVbyte: Number(appConfig?.donations?.feeRateSatPerVbyte ?? 2) || 2,
     graffiti: "",
+    includeGraffitiInOpReturn: false,
     ...encrypted,
     address: wallet.address,
     derivationPath: wallet.derivationPath,
@@ -20470,6 +20477,7 @@ async function renderUnlockedWallet(addressOverride) {
     storedWallet?.feeRateSatPerVbyte ?? appConfig?.donations?.feeRateSatPerVbyte ?? 2
   );
   setGraffitiInputValue(storedWallet?.graffiti ?? "");
+  setIncludeGraffitiOpReturnValue(storedWallet?.includeGraffitiInOpReturn ?? false);
   setMaxRequestsEditing(false);
   setFeeRateEditing(false);
   setGraffitiEditing(false);
@@ -20633,6 +20641,7 @@ async function initDonatePage() {
   const graffitiInput = $("[data-graffiti-input]");
   const editGraffitiButton = $("[data-edit-graffiti]");
   const saveGraffitiButton = $("[data-save-graffiti]");
+  const includeGraffitiOpReturnToggle = $("[data-include-graffiti-opreturn]");
   const activityPrevButton = $("[data-wallet-activity-prev]");
   const activityNextButton = $("[data-wallet-activity-next]");
   const sendButton = $("[data-send-wallet]");
@@ -20762,6 +20771,13 @@ async function initDonatePage() {
     if (donationRuntimeState.enabled) {
       donationRuntimeState.lastHeartbeatAt = 0;
     }
+    setMessage("", "");
+  });
+  includeGraffitiOpReturnToggle?.addEventListener("change", () => {
+    updateStoredWallet({
+      includeGraffitiInOpReturn: includeGraffitiOpReturnToggle.checked
+    });
+    updateGraffitiThresholdNote();
     setMessage("", "");
   });
   activityPrevButton?.addEventListener("click", () => {
