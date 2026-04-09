@@ -19,6 +19,7 @@ use bitcoin::{
     bip32::{DerivationPath, Xpriv},
     ecdsa::Signature as BitcoinEcdsaSignature,
     key::{CompressedPublicKey, Secp256k1},
+    script::PushBytesBuf,
     sighash::{EcdsaSighashType, SighashCache},
     transaction::Version,
     Address, Amount, Network, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction,
@@ -128,6 +129,8 @@ struct DonationsConfig {
     #[serde(default = "default_execution_poll_ms")]
     executionPollMs: u64,
     minimumGraffitiBtc: String,
+    #[serde(default)]
+    includeGraffitiInOpReturn: bool,
     minimumReputationNeeded: i64,
     minSatsForHeartbeat: u64,
 }
@@ -408,6 +411,35 @@ fn parse_btc_amount_to_sats(value: &str) -> Result<u64> {
         .checked_mul(100_000_000)
         .and_then(|value| value.checked_add(fractional))
         .ok_or_else(|| anyhow!("BTC amount is too large."))?)
+}
+
+fn graffiti_op_return_script(
+    config: &ConfigResponse,
+    donor_status: &DonorStatusResponse,
+    graffiti: &str,
+) -> Result<Option<ScriptBuf>> {
+    let trimmed = graffiti.trim();
+
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    if !trimmed.is_ascii() {
+        bail!("Graffiti must contain only ASCII characters to be added to the OP_RETURN.");
+    }
+
+    let minimum_graffiti_sats = parse_btc_amount_to_sats(&config.donations.minimumGraffitiBtc)?;
+
+    if !config.donations.includeGraffitiInOpReturn
+        && donor_status.confirmedBalanceSats < minimum_graffiti_sats
+    {
+        return Ok(None);
+    }
+
+    let push_bytes = PushBytesBuf::try_from(trimmed.as_bytes().to_vec())
+        .context("Graffiti is too long to fit in an OP_RETURN output.")?;
+
+    Ok(Some(ScriptBuf::new_op_return(push_bytes)))
 }
 
 fn parse_network(value: &str) -> Result<Network> {
@@ -940,6 +972,7 @@ fn build_tx(
     utxos: &[Utxo],
     outputs: &[(Address, u64)],
     fee_rate_sat_per_vbyte: f64,
+    op_return_script: Option<&ScriptBuf>,
 ) -> Result<String> {
     let secp = Secp256k1::new();
     let (_addr, _path, private_key, public_key) =
@@ -951,6 +984,9 @@ fn build_tx(
     let mut selected_inputs = Vec::new();
     let mut total_input_value = 0u64;
     let total_output_value: u64 = outputs.iter().map(|(_, value)| *value).sum();
+    let extra_virtual_bytes = op_return_script
+        .map(|script| script.len() as u64 + 9)
+        .unwrap_or(0);
 
     let mut sorted_utxos = utxos
         .iter()
@@ -963,7 +999,12 @@ fn build_tx(
         selected_inputs.push(utxo.clone());
         total_input_value += utxo.value;
         let fee_with_change =
-            estimate_fee(selected_inputs.len() as u64, outputs.len() as u64 + 1, fee_rate_sat_per_vbyte);
+            estimate_fee(
+                selected_inputs.len() as u64,
+                outputs.len() as u64 + 1,
+                fee_rate_sat_per_vbyte,
+                extra_virtual_bytes,
+            );
 
         if total_input_value >= total_output_value + fee_with_change {
             break;
@@ -978,6 +1019,7 @@ fn build_tx(
         selected_inputs.len() as u64,
         outputs.len() as u64 + 1,
         fee_rate_sat_per_vbyte,
+        extra_virtual_bytes,
     );
     let mut change_value = total_input_value as i64 - total_output_value as i64 - fee as i64;
     let has_change = change_value as u64 > DUST_THRESHOLD;
@@ -987,6 +1029,7 @@ fn build_tx(
             selected_inputs.len() as u64,
             outputs.len() as u64,
             fee_rate_sat_per_vbyte,
+            extra_virtual_bytes,
         );
         change_value = total_input_value as i64 - total_output_value as i64 - fee as i64;
     }
@@ -1007,6 +1050,13 @@ fn build_tx(
             })
             .collect(),
     };
+
+    if let Some(script_pubkey) = op_return_script {
+        transaction.output.push(TxOut {
+            value: Amount::from_sat(0),
+            script_pubkey: script_pubkey.clone(),
+        });
+    }
 
     for utxo in &selected_inputs {
         transaction.input.push(TxIn {
@@ -1050,8 +1100,13 @@ fn build_tx(
     Ok(bitcoin::consensus::encode::serialize_hex(&transaction))
 }
 
-fn estimate_fee(input_count: u64, output_count: u64, fee_rate_sat_per_vbyte: f64) -> u64 {
-    let virtual_bytes = 11 + input_count * 68 + output_count * 31;
+fn estimate_fee(
+    input_count: u64,
+    output_count: u64,
+    fee_rate_sat_per_vbyte: f64,
+    extra_virtual_bytes: u64,
+) -> u64 {
+    let virtual_bytes = 11 + input_count * 68 + output_count * 31 + extra_virtual_bytes;
     ((virtual_bytes as f64) * fee_rate_sat_per_vbyte).ceil() as u64
 }
 
@@ -1068,7 +1123,7 @@ fn calculate_max_send_sats(utxos: &[Utxo], fee_rate_sat_per_vbyte: f64) -> Resul
     let total_input_value = confirmed_utxos
         .iter()
         .fold(0u64, |sum, utxo| sum.saturating_add(utxo.value));
-    let fee = estimate_fee(confirmed_utxos.len() as u64, 1, fee_rate_sat_per_vbyte);
+    let fee = estimate_fee(confirmed_utxos.len() as u64, 1, fee_rate_sat_per_vbyte, 0);
 
     if total_input_value <= fee {
         bail!("This donation wallet does not have enough confirmed funds to cover the fee.");
@@ -1213,12 +1268,15 @@ async fn run_start_loop(
                     ))
                 })
                 .collect::<Result<Vec<_>>>()?;
+            let op_return_script =
+                graffiti_op_return_script(config, &donor_status, graffiti)?;
 
             let raw_tx = build_tx(
                 wallet,
                 &utxos.utxos,
                 &outputs,
                 fee_rate_sat_per_vbyte,
+                op_return_script.as_ref(),
             )?;
 
             let submit_payload = FulfillmentSubmitRequest {
@@ -1339,6 +1397,14 @@ async fn main() -> Result<()> {
             print_kv(
                 "Graffiti Min",
                 &format!("{} {}", config.donations.minimumGraffitiBtc, config.unitLabel)
+            );
+            print_kv(
+                "Graffiti OP_RETURN",
+                if config.donations.includeGraffitiInOpReturn {
+                    "Always include when graffiti is set"
+                } else {
+                    "Only above graffiti minimum"
+                }
             );
             println!();
             run_start_loop(
@@ -1462,7 +1528,13 @@ async fn main() -> Result<()> {
                 parse_btc_amount_to_sats(&amount)?
             };
             let raw_tx =
-                build_tx(&wallet, &utxos.utxos, &[(destination, amount_sats)], configured_fee_rate_sat_per_vbyte)?;
+                build_tx(
+                    &wallet,
+                    &utxos.utxos,
+                    &[(destination, amount_sats)],
+                    configured_fee_rate_sat_per_vbyte,
+                    None,
+                )?;
             let payload = SendTransactionRequest {
                 donorAddress: &wallet.address,
                 rawTransactionHex: &raw_tx,

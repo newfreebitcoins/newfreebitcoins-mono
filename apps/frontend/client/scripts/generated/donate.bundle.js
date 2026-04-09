@@ -19434,6 +19434,32 @@ function parseBtcAmountToSats(value2) {
   const normalizedFractional = `${fractionalPart}00000000`.slice(0, 8);
   return Number(BigInt(wholePart) * 100000000n + BigInt(normalizedFractional));
 }
+function isAsciiText(value2) {
+  return /^[\x00-\x7F]*$/.test(String(value2 ?? ""));
+}
+function getGraffitiOpReturnBuffer() {
+  const graffiti = String(getStoredWallet()?.graffiti ?? "").trim();
+  if (!graffiti) {
+    return null;
+  }
+  if (!isAsciiText(graffiti)) {
+    throw new Error("Graffiti must contain only ASCII characters to be added to the OP_RETURN.");
+  }
+  const minimumGraffitiSats = parseBtcAmountToSats(
+    String(appConfig?.donations?.minimumGraffitiBtc ?? "0")
+  );
+  const confirmedBalanceSats = Number(donorStatusState?.confirmedBalanceSats ?? 0);
+  if (!appConfig?.donations?.includeGraffitiInOpReturn && confirmedBalanceSats < Number(minimumGraffitiSats ?? 0)) {
+    return null;
+  }
+  return import_buffer.Buffer.from(graffiti, "ascii");
+}
+function getOpReturnVirtualBytes(data) {
+  if (!data?.length) {
+    return 0;
+  }
+  return data.length + 11;
+}
 function normalizeMnemonicInput(value2) {
   return String(value2 ?? "").trim().toLowerCase().replace(/\s+/g, " ");
 }
@@ -19651,7 +19677,12 @@ function renderExecutionStatus(text, isRunning = false) {
 function updateGraffitiThresholdNote() {
   const node = $("[data-graffiti-threshold]");
   const minimumGraffitiBtc = String(appConfig?.donations?.minimumGraffitiBtc ?? "").trim();
+  const forceInclude = Boolean(appConfig?.donations?.includeGraffitiInOpReturn);
   if (node) {
+    if (forceInclude) {
+      node.textContent = minimumGraffitiBtc ? `${minimumGraffitiBtc} ${getCoinLabel()} (OP_RETURN inclusion forced on)` : "the configured minimum (OP_RETURN inclusion forced on)";
+      return;
+    }
     node.textContent = minimumGraffitiBtc ? `${minimumGraffitiBtc} ${getCoinLabel()}` : "the configured minimum";
   }
 }
@@ -19994,8 +20025,8 @@ function clearUnlockedWalletRuntime() {
     pendingTxId: ""
   };
 }
-function estimateFee(inputCount, outputCount, feeRateSatPerVbyte) {
-  const virtualBytes = 11 + inputCount * 68 + outputCount * 31;
+function estimateFee(inputCount, outputCount, feeRateSatPerVbyte, extraVirtualBytes = 0) {
+  const virtualBytes = 11 + inputCount * 68 + outputCount * 31 + extraVirtualBytes;
   return Math.ceil(virtualBytes * feeRateSatPerVbyte);
 }
 async function maybeHeartbeat() {
@@ -20052,6 +20083,8 @@ async function buildFulfillmentTransaction(reservedRequests) {
   }
   const confirmedUtxos = [...utxoResult.data?.utxos ?? []].filter((utxo) => Number(utxo.height ?? 0) > 0).sort((left, right) => left.value - right.value);
   const feeRate = getFeeRateSatPerVbyte();
+  const graffitiOpReturnData = getGraffitiOpReturnBuffer();
+  const extraVirtualBytes = getOpReturnVirtualBytes(graffitiOpReturnData);
   const outputs2 = reservedRequests.map((request) => ({
     address: request.bitcoinAddress,
     value: Number(request.amountSats)
@@ -20065,7 +20098,8 @@ async function buildFulfillmentTransaction(reservedRequests) {
     const feeWithChange = estimateFee(
       selectedInputs.length,
       outputs2.length + 1,
-      feeRate
+      feeRate,
+      extraVirtualBytes
     );
     if (totalInputs >= totalOutputs + feeWithChange) {
       break;
@@ -20074,11 +20108,16 @@ async function buildFulfillmentTransaction(reservedRequests) {
   if (!selectedInputs.length) {
     throw new Error("This donation wallet has no confirmed spendable UTXOs.");
   }
-  let fee = estimateFee(selectedInputs.length, outputs2.length + 1, feeRate);
+  let fee = estimateFee(
+    selectedInputs.length,
+    outputs2.length + 1,
+    feeRate,
+    extraVirtualBytes
+  );
   let changeValue = totalInputs - totalOutputs - fee;
   let hasChange = changeValue > DUST_THRESHOLD;
   if (!hasChange) {
-    fee = estimateFee(selectedInputs.length, outputs2.length, feeRate);
+    fee = estimateFee(selectedInputs.length, outputs2.length, feeRate, extraVirtualBytes);
     changeValue = totalInputs - totalOutputs - fee;
   }
   if (changeValue < 0) {
@@ -20101,6 +20140,18 @@ async function buildFulfillmentTransaction(reservedRequests) {
     psbt.addOutput({
       address: output.address,
       value: BigInt(output.value)
+    });
+  }
+  if (graffitiOpReturnData?.length) {
+    const embedOutput = payments_exports.embed({
+      data: [graffitiOpReturnData]
+    }).output;
+    if (!embedOutput) {
+      throw new Error("Unable to build the graffiti OP_RETURN output.");
+    }
+    psbt.addOutput({
+      script: embedOutput,
+      value: 0n
     });
   }
   if (hasChange && changeValue > DUST_THRESHOLD) {
