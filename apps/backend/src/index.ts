@@ -496,6 +496,7 @@ function setCorsHeaders(response: express.Response) {
   response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   response.setHeader("Access-Control-Allow-Headers", "Content-Type");
   response.setHeader("Access-Control-Allow-Credentials", "true");
+  response.setHeader("Access-Control-Allow-Origin", getFrontendBaseUrl());
 }
 
 function sendFrontendRedirect(response: express.Response, targetUrl: string) {
@@ -532,13 +533,10 @@ function sendFrontendRedirect(response: express.Response, targetUrl: string) {
 }
 
 app.use(express.json());
-app.use((request, response, next) => {
-  const origin = request.headers.origin;
-
+app.use((_request, response, next) => {
   setCorsHeaders(response);
-  response.setHeader("Access-Control-Allow-Origin", origin || "*");
 
-  if (request.method === "OPTIONS") {
+  if (_request.method === "OPTIONS") {
     response.status(204).end();
     return;
   }
